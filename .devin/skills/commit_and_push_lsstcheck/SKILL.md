@@ -13,7 +13,7 @@ description: Commit and push changes in the lsstcheck repo as small focused comm
 - Check `git status` and `git diff` first. Stage only the files that
   belong to the change and leave unrelated work uncommitted.
 - Match the existing history: imperative subject line, a short body
-  explaining why the change was made, then the Devin trailer.
+  explaining why the change was made.
 
 ## Message text
 
