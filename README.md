@@ -39,8 +39,7 @@ Options:
 | LSST / LASAIR | diaObjectId, `LSST-*-DO-*` names, detection count, clickable object link |
 | Rubin Schedule | published-window extent, confirmed visit table or "No scheduled observation", region pointing stats (bands, closest approach), coverage history |
 
-`--plot` opens the AB-mag lightcurve (nightly bins over faded raw
-points) and `--save` writes the plot and table to the current
+`--plot` opens the AB-mag lightcurve and `--save` writes the plot and table to the current
 directory. The schedule section links
 to the schedule viewer filtered to pointings near the target.
 
