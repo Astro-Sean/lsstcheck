@@ -7,8 +7,8 @@ sky position, then reports:
   * the LSST object identity (diaObjectId / LSST-*-DO name) and a
     clickable LASAIR link,
   * alternative names from the TNS public catalog,
-  * the next scheduled Rubin pointing that covers the position, or a
-    cadence-based estimate when nothing is scheduled.
+  * the next scheduled Rubin pointing that covers the position, or
+    an explicit note when the published schedule has none.
 
 Examples:
     lsstcheck 2024lwa                  # TNS name
@@ -934,25 +934,6 @@ def scheduled_region_stats(visits, ra, dec, now_mjd,
     return out
 
 
-def revisit_estimate(night_keys, now_mjd):
-    """Project next coverage from covered-night indices.
-
-    Returns (est_mjd, med_gap, gaps) or None with fewer than two
-    nights. gaps are the night-to-night intervals in days.
-    """
-    keys = sorted(int(k) for k in night_keys)
-    if len(keys) < 2:
-        return None
-    gaps = np.diff(np.array(keys, dtype=float))
-    med = float(np.median(gaps))
-    if med <= 0:
-        return None
-    est = float(keys[-1]) + med
-    while est < now_mjd:
-        est += med
-    return est, med, gaps
-
-
 def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
     print()
     tp.header("Rubin Schedule")
@@ -983,10 +964,11 @@ def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
                   "Priority", "Program"], rows)
     elif sched_ok:
         if horizon_h is not None:
-            tp.info(f"No visit scheduled in the published window "
-                    f"(reaches ~{horizon_h:.0f} h ahead)")
+            tp.info("No scheduled observation in the published "
+                    f"window (reaches ~{horizon_h:.0f} h ahead)")
         else:
-            tp.info("No visit scheduled in the published window")
+            tp.info("No scheduled observation in the published "
+                    "window")
         stats = scheduled_region_stats(visits, ra, dec, now)
         if stats["pointings"]:
             band_str = ", ".join(stats["bands"]) or "-"
@@ -1024,47 +1006,19 @@ def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
         return
 
     nights = covered_nights(rows, ra, dec)
-    est = revisit_estimate(nights.keys(), now)
-    if est is not None:
-        est_mjd, med_gap, gaps = est
-        n_n = len(gaps) + 1
+    if nights:
         keys = sorted(nights)
         last_mjd = max(m for m, _ in nights[keys[-1]])
         bands = sorted({e.get("band", "?") for es in nights.values()
                         for _, e in es})
+        word = "night" if len(keys) == 1 else "nights"
         tp.kv("Coverage history",
-              f"{n_n} nights in {days} d, last {iso_date(last_mjd)}")
-        tp.kv("Median revisit", f"{med_gap:.1f} d")
+              f"{len(keys)} {word} in {days} d, "
+              f"last {iso_date(last_mjd)}")
         tp.kv("Bands", ", ".join(bands))
-        if not hits:
-            in_d = est_mjd - now
-            # robust needs enough nights and revisit gaps that do not
-            # scatter widely; anything less is flagged, not hidden
-            if n_n >= 5 and gaps.max() - gaps.min() <= med_gap:
-                tp.ok(f"Estimated next coverage ~{iso_date(est_mjd)} "
-                      f"(in ~{in_d:.0f} d; {n_n} nights of history)")
-            elif n_n < 5:
-                tp.warn(f"Estimated next coverage ~{iso_date(est_mjd)} "
-                        f"(in ~{in_d:.0f} d) - low confidence: "
-                        f"only {n_n} covered nights")
-            else:
-                tp.warn(f"Estimated next coverage ~{iso_date(est_mjd)} "
-                        f"(in ~{in_d:.0f} d) - low confidence: revisit "
-                        f"gaps range {gaps.min():.0f}-"
-                        f"{gaps.max():.0f} d")
-    elif nights:
-        last_mjd = max(m for m, _ in nights[max(nights)])
-        tp.kv("Coverage history", "one night only")
-        tp.kv("Last covered", iso_date(last_mjd))
-        if not hits:
-            tp.warn("Cannot estimate next coverage: only one "
-                    "covered night in the window")
     else:
         tp.info(f"No exposures cover this position in the last "
                 f"{days} d")
-        if not hits:
-            tp.warn("Cannot estimate next coverage: no covered "
-                    "nights in the window")
 
 
 # ---------------------------------------------------------------------------
@@ -1083,7 +1037,7 @@ def main():
     ap.add_argument("--tns-radius", type=float, default=5.0,
                     help="TNS cone radius in arcsec (default 5)")
     ap.add_argument("--days", type=int, default=EXPOSURE_DAYS,
-                    help="days of exposure history for cadence estimate")
+                    help="days of exposure history to report")
     ap.add_argument("--sched-hours", type=int, default=SCHEDULE_HOURS,
                     help="schedule look-ahead hours, 1-48 (default 48)")
     ap.add_argument("--refresh-tns", action="store_true",

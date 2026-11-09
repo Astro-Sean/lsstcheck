@@ -22,7 +22,7 @@ Options:
 |---|---|---|
 | `--radius` | 15 | LASAIR cone radius, arcsec |
 | `--tns-radius` | 5 | TNS cone radius, arcsec |
-| `--days` | 120 | exposure history window for the cadence estimate |
+| `--days` | 120 | exposure history window |
 | `--sched-hours` | 48 | schedule look-ahead, clamped to 1-48 h |
 | `--refresh-tns` | off | rebuild the TNS index |
 | `--live-tns` | off | live per-object check on wis-tns.org |
@@ -36,7 +36,7 @@ Options:
 |---|---|
 | TNS | catalog date, object name, type, redshift, discovery date, alternative names with their groups |
 | LSST / LASAIR | diaObjectId, `LSST-*-DO-*` names, detection count, clickable object link |
-| Rubin Schedule | published-window extent, confirmed visit table when covered, region pointing stats (bands, closest approach), coverage history, confidence-flagged estimate when unscheduled |
+| Rubin Schedule | published-window extent, confirmed visit table or "No scheduled observation", region pointing stats (bands, closest approach), coverage history |
 
 `--plot` opens the difference-flux lightcurve and `--save` writes the
 plot and table to the current directory. The schedule section links
@@ -68,13 +68,11 @@ SN2024lwa | Pan-STARRS | SN II | z=0.05689 | disc 2024-06-16
 -> Detections in LASAIR: 9
 
 ===================== Rubin Schedule ======================
--> No visit scheduled in the published window (reaches ~20 h ahead)
+-> No scheduled observation in the published window (reaches ~20 h ahead)
 -> No pointings within ~3 deg planned in the window
 -> Schedule viewer, pointings near this field: https://usdf-rsp.slac.stanford.edu/obsloctap/static/viewer.html?start=now&time=48&predicate=...
 Coverage history         : 2 nights in 120 d, last 2026-10-30
-Median revisit           : 2.0 d
 Bands                    : i, r
-[warn] Estimated next coverage ~2026-11-11 (in ~1 d) - low confidence: only 2 covered nights
 
 ========================== Links ==========================
 -> LASAIR object: https://lasair.lsst.ac.uk/objects/170587106692825120/

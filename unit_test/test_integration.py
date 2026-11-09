@@ -44,7 +44,7 @@ class TestKnownTarget:
         assert "Detections in LASAIR" in out
         # schedule section always reports something honest
         assert "Rubin Schedule" in out
-        assert ("No visit scheduled" in out
+        assert ("No scheduled observation" in out
                 or "Scheduled visits" in out)
 
     def test_coordinates_resolve_same_object(self):
@@ -87,7 +87,7 @@ class TestScheduledTarget:
         assert "No TNS entry" in out
         assert "Detections in LASAIR" in out
         # this field is in the current published window
-        assert "Scheduled visits" in out or "No visit scheduled" in out
+        assert "Scheduled visits" in out or "No scheduled observation" in out
 
     def test_lsst_name_form(self):
         # LSST-*-DO-<id> parses to the same diaObjectId path
@@ -105,7 +105,7 @@ class TestUnobservedTarget:
         out = r.stdout
         assert "No LSST alerts" in out
         assert "northern edge" in out  # dec>15 footprint warning
-        assert "No visit scheduled" in out or "Scheduled visits" in out
+        assert "No scheduled observation" in out or "Scheduled visits" in out
 
     def test_remote_south_coords(self):
         # far south field, likely no TNS object and sparse coverage

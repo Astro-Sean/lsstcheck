@@ -291,36 +291,6 @@ class TestScheduledRegionStats:
         assert st["nearest_mjd"] is None
 
 
-class TestRevisitEstimate:
-    NOW = 60010.0
-
-    def test_regular_cadence(self, lsc):
-        # nights every 2 d, last at 60008 -> next ~60010+ rolled fwd
-        est = lsc.revisit_estimate([60000, 60002, 60004, 60006,
-                                    60008], self.NOW)
-        assert est is not None
-        est_mjd, med, gaps = est
-        assert med == pytest.approx(2.0)
-        assert est_mjd >= self.NOW
-        assert len(gaps) == 4
-
-    def test_single_gap(self, lsc):
-        est = lsc.revisit_estimate([60000, 60003], self.NOW)
-        assert est is not None
-        assert est[1] == pytest.approx(3.0)
-
-    def test_too_few_nights(self, lsc):
-        assert lsc.revisit_estimate([60000], self.NOW) is None
-        assert lsc.revisit_estimate([], self.NOW) is None
-
-    def test_rolls_forward(self, lsc):
-        # stale history: last night far in the past, estimate must
-        # land in the future
-        est = lsc.revisit_estimate([59000, 59002, 59004], self.NOW)
-        assert est is not None
-        assert est[0] >= self.NOW
-
-
 class TestScheduleHorizon:
     def test_horizon_hours(self, lsc):
         visits = [{"t_max": 100.5}, {"t_max": 101.0}, {"bad": 1}]
