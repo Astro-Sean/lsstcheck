@@ -60,8 +60,13 @@ def supports_color(stream=None):
 _COLOR = supports_color()
 _COLOR_ERR = supports_color(sys.stderr)
 
+# Set True to force ASCII symbols ([ok], ->) regardless of encoding.
+FORCE_ASCII = False
+
 
 def _use_unicode(stream):
+    if FORCE_ASCII:
+        return False
     enc = (getattr(stream, "encoding", "") or "").lower()
     return "utf" in enc
 

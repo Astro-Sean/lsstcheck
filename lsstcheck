@@ -41,6 +41,8 @@ import astropy.units as u
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import termprint as tp
 
+tp.FORCE_ASCII = True
+
 TNS_ZIP_URL = (
     "https://www.wis-tns.org/sites/default/files/tns_public_objects/"
     "tns_public_objects.csv.zip"
@@ -236,7 +238,7 @@ class TnsCatalog:
         if not refresh and self._csv_date() == today:
             return
         tp.info("TNS catalog stale or missing - refreshing index")
-        with tp.timed("building TNS index"):
+        with tp.timed("Building TNS index"):
             self._rebuild()
 
     def _rebuild(self):
@@ -495,7 +497,7 @@ class LasairWeb:
             r.raise_for_status()
             m = re.search(r'csrfmiddlewaretoken" value="([^"]+)', r.text)
             if not m:
-                raise RuntimeError("no CSRF token on LASAIR search page")
+                raise RuntimeError("No CSRF token on LASAIR search page")
             self._csrf = m.group(1)
         return self._csrf
 
@@ -613,7 +615,7 @@ def exposure_rows(ra, dec, days=EXPOSURE_DAYS, box_deg=2.6):
             r.raise_for_status()
             rows.extend(r.json())
         except (requests.RequestException, ValueError) as e:
-            tp.warn(f"exposure query failed: {e}")
+            tp.warn(f"Exposure query failed: {e}")
             return rows, False
     return rows, True
 
@@ -629,13 +631,14 @@ def tns_display_name(row):
 
 
 def print_tns_section(rows, catalog_date=None, live_note=None):
+    print()
     tp.header("TNS")
     if catalog_date:
-        tp.info(f"catalog date: {catalog_date}")
+        tp.info(f"Catalog date: {catalog_date}")
     if live_note:
         tp.info(live_note)
     if not rows:
-        tp.info("no TNS entry for this target")
+        tp.info("No TNS entry for this target")
         return
     for row in rows[:3]:
         bits = [tns_display_name(row)]
@@ -656,7 +659,7 @@ def print_tns_section(rows, catalog_date=None, live_note=None):
         if not names:
             names = internal_names_list(row.get("internal_names"))
         if names:
-            tp.info("alternative names:")
+            tp.info("Alternative names:")
             for n in names[:10]:
                 print(f"    {n}")
             if len(names) > 10:
@@ -673,11 +676,12 @@ def lsst_names_from_tns(tns_rows):
 
 
 def print_lsst_section(objects, tns_rows, detections=None):
+    print()
     tp.header("LSST / LASAIR")
     lsst_names = lsst_names_from_tns(tns_rows)
 
     if not objects and not lsst_names:
-        tp.info("no LSST alerts at this position")
+        tp.info("No LSST alerts at this position")
         return
 
     table_rows = []
@@ -705,7 +709,7 @@ def print_lsst_section(objects, tns_rows, detections=None):
         for url in links[:3]:
             tp.info(f"LASAIR: {osc8_link(url)}")
     if detections is not None:
-        tp.info(f"detections in LASAIR: {detections}")
+        tp.info(f"Detections in LASAIR: {detections}")
 
     covered = {o["id"] for o in objects}
     for n in lsst_names:
@@ -797,13 +801,14 @@ def covered_nights(rows, ra, dec):
 
 
 def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
-    tp.header("Rubin schedule")
+    print()
+    tp.header("Rubin Schedule")
     now = Time.now().mjd
     sched_ok = True
     try:
         visits = schedule_visits(sched_hours)
     except (requests.RequestException, ValueError) as e:
-        tp.warn(f"schedule query failed: {e}")
+        tp.warn(f"Schedule query failed: {e}")
         visits = []
         sched_ok = False
     if not isinstance(visits, list):
@@ -812,7 +817,7 @@ def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
     horizon_h = schedule_horizon_h(visits, now)
     hits = upcoming_visits(visits, ra, dec, now)
     if hits:
-        tp.info("scheduled visits covering this position:")
+        tp.info("Scheduled visits covering this position:")
         rows = []
         for tmin, sep, v in hits:
             band = band_name(v["em_min"], v["em_max"])
@@ -825,24 +830,24 @@ def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
                   "Priority", "Program"], rows)
     elif sched_ok:
         if horizon_h is not None:
-            tp.info(f"no visit scheduled in the published window "
+            tp.info(f"No visit scheduled in the published window "
                     f"(reaches ~{horizon_h:.0f} h ahead)")
         else:
-            tp.info("no visit scheduled in the published window")
+            tp.info("No visit scheduled in the published window")
 
-    tp.info("schedule viewer, pointings near this field: "
+    tp.info("Schedule viewer, pointings near this field: "
             f"{osc8_link(schedule_viewer_url(ra, dec, sched_hours))}")
 
     exp_ok = True
     try:
         rows, exp_ok = exposure_rows(ra, dec, days=days)
     except Exception as e:  # network/parse surprises
-        tp.warn(f"exposure history query failed: {e}")
+        tp.warn(f"Exposure history query failed: {e}")
         rows = []
         exp_ok = False
 
     if not exp_ok:
-        tp.info("exposure history unavailable; cannot check past "
+        tp.info("Exposure history unavailable; cannot check past "
                 "coverage")
         return
 
@@ -863,15 +868,15 @@ def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
         tp.kv("Median revisit", f"{med_gap:.1f} d")
         tp.kv("Bands", ", ".join(bands))
         if not hits:
-            tp.ok(f"estimated next coverage ~{iso_date(est_mjd)} "
+            tp.ok(f"Estimated next coverage ~{iso_date(est_mjd)} "
                   f"(in ~{est_mjd - now:.0f} d)")
     elif nights:
         last_mjd = max(m for m, _ in nights[max(nights)])
         tp.kv("Coverage history", "one night only")
         tp.kv("Last covered", iso_date(last_mjd))
-        tp.info("too few repeats to estimate the next coverage")
+        tp.info("Too few repeats to estimate the next coverage")
     else:
-        tp.info(f"no exposures cover this position in the last "
+        tp.info(f"No exposures cover this position in the last "
                 f"{days} d")
 
 
@@ -903,7 +908,7 @@ def main():
 
     target = parse_target(args.target)
     if target is None:
-        tp.die("could not parse target; see --help")
+        tp.die("Could not parse target; see --help")
 
     ra = dec = None
     coords_source = None
@@ -949,7 +954,7 @@ def main():
                     break
             if live_row is None:
                 if not tns_rows:
-                    live_note = "live check: not found on wis-tns.org"
+                    live_note = "Live check: not found on wis-tns.org"
             elif not tns_rows:
                 tns_rows = [live_row]
                 if ra is None and live_row.get("ra") is not None:
@@ -1008,16 +1013,17 @@ def main():
                 break
 
     # ---- print ----
-    tp.header("target")
+    print()
+    tp.header("Target")
     if target["kind"] == "name":
-        tp.info(f"name: {target['raw']}")
+        tp.info(f"Name: {target['raw']}")
     elif target["kind"] in ("dia_id", "lsst_name"):
-        tp.info(f"LSST id: {target['dia_id']}")
+        tp.info(f"LSST ID: {target['dia_id']}")
     if ra is not None:
-        tp.info(f"position: {ra:.6f}, {dec:.6f}"
+        tp.info(f"Position: {ra:.6f}, {dec:.6f}"
                 + (f"  ({coords_source})" if coords_source else ""))
         if dec > 15.0:
-            tp.warn(f"dec {dec:+.1f} is near or past the northern edge "
+            tp.warn(f"Dec {dec:+.1f} is near or past the northern edge "
                     "of the LSST survey footprint; coverage may be rare")
 
     detections = (obj_page_info[1]
@@ -1028,12 +1034,13 @@ def main():
     print_lsst_section(lasair_objs, tns_rows, detections)
 
     if ra is None:
-        tp.die("could not determine coordinates for this target")
+        tp.die("Could not determine coordinates for this target")
 
     sched_hours = min(48, max(1, args.sched_hours))
     print_schedule_section(ra, dec, args.days, sched_hours)
 
-    tp.header("links")
+    print()
+    tp.header("Links")
     if lasair_objs:
         oid = lasair_objs[0]["id"]
         tp.info(f"LASAIR object: "
@@ -1049,7 +1056,7 @@ def main():
     if tns_slug:
         tp.info(f"TNS object: "
                 f"{osc8_link(TNS_LIVE_BASE + tns_slug)}")
-    tp.info(f"pointings skymap: {osc8_link(skymap_url(sched_hours))}")
+    tp.info(f"Pointings skymap: {osc8_link(skymap_url(sched_hours))}")
     return 0
 
 

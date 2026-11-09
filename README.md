@@ -33,7 +33,7 @@ Options:
 |---|---|
 | TNS | catalog date, object name, reporting group, type, redshift, discovery date, separation, alternative names with their groups. Rows verified against the live site are tagged `live` |
 | LSST / LASAIR | diaObjectId, `LSST-*-DO-*` names, detection count, clickable object link (OSC 8; raw URL prints too) |
-| Rubin schedule | published-window extent, confirmed visit table when covered, coverage history (nights, last date, bands, median revisit), labeled estimate when unscheduled |
+| Rubin Schedule | published-window extent, confirmed visit table when covered, coverage history (nights, last date, bands, median revisit), labeled estimate when unscheduled |
 
 The schedule section links to the schedule viewer pre-filtered to
 pointings within ~2 deg of the target, and the links section adds the
@@ -42,35 +42,41 @@ all-sky pointings skymap.
 ## Example
 
 ```
-========================== target ==========================
--> name: 2024lwa
--> position: 338.196074, -9.447009  (TNS)
-=========================== TNS ===========================
--> catalog date: 2026-11-09
+
+========================== Target ==========================
+-> Name: 2024lwa
+-> Position: 338.196074, -9.447009  (TNS)
+
+=========================== TNS ============================
+-> Catalog date: 2026-11-09
 SN2024lwa | Pan-STARRS | SN II | z=0.05689 | disc 2024-06-16
--> alternative names:
+-> Alternative names:
     PS24emd
     LSST-AP-DO-170587106692825120
     ZTF26abfwokm
     GOTO26hsm
     ATLAS26jpe
+
 ====================== LSST / LASAIR ======================
        diaObjectId  LSST name                      Sep [arcsec]
 ------------------  -----------------------------  ------------
 170587106692825120  LSST-AP-DO-170587106692825120          10.4
 -> LASAIR: https://lasair.lsst.ac.uk/objects/170587106692825120/
--> detections in LASAIR: 9
-====================== Rubin schedule ======================
--> no visit scheduled in the published window (reaches ~22 h ahead)
--> schedule viewer, pointings near this field: https://usdf-rsp.slac.stanford.edu/obsloctap/static/viewer.html?start=now&time=48&predicate=...
+-> Detections in LASAIR: 9
+
+===================== Rubin Schedule ======================
+-> No visit scheduled in the published window (reaches ~22 h ahead)
+-> Schedule viewer, pointings near this field: https://usdf-rsp.slac.stanford.edu/obsloctap/static/viewer.html?start=now&time=48&predicate=...
 Coverage history         : 2 nights in 120 d, last 2026-10-30
 Median revisit           : 2.0 d
 Bands                    : i, r
-estimated next coverage ~2026-11-11 (in ~2 d)
-========================== links ==========================
+[ok] Estimated next coverage ~2026-11-11 (in ~2 d)
+
+========================== Links ==========================
 -> LASAIR object: https://lasair.lsst.ac.uk/objects/170587106692825120/
 -> LASAIR cone search: https://lasair.lsst.ac.uk/search/338.196074,-9.447009,15
--> pointings skymap: https://usdf-rsp.slac.stanford.edu/obsloctap/skymap?start=now&time=48
+-> TNS object: https://www.wis-tns.org/object/2024lwa
+-> Pointings skymap: https://usdf-rsp.slac.stanford.edu/obsloctap/skymap?start=now&time=48
 ```
 
 ## Data sources

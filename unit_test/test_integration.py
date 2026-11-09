@@ -38,11 +38,11 @@ class TestKnownTarget:
         assert "PS24emd" in out
         # LASAIR identity + link
         assert "lasair.lsst.ac.uk/objects/170587106692825120" in out
-        assert "detections in LASAIR" in out
+        assert "Detections in LASAIR" in out
         # schedule section always reports something honest
-        assert "Rubin schedule" in out
-        assert ("no visit scheduled" in out
-                or "scheduled visits" in out)
+        assert "Rubin Schedule" in out
+        assert ("No visit scheduled" in out
+                or "Scheduled visits" in out)
 
     def test_coordinates_resolve_same_object(self):
         r = run_cli("338.196", "-9.447")
@@ -64,10 +64,10 @@ class TestScheduledTarget:
         assert r.returncode == 0, r.stderr
         out = r.stdout
         assert "313761042329501776" in out
-        assert "no TNS entry" in out
-        assert "detections in LASAIR" in out
+        assert "No TNS entry" in out
+        assert "Detections in LASAIR" in out
         # this field is in the current published window
-        assert "scheduled visits" in out or "no visit scheduled" in out
+        assert "Scheduled visits" in out or "No visit scheduled" in out
 
     def test_lsst_name_form(self):
         # LSST-*-DO-<id> parses to the same diaObjectId path
@@ -83,15 +83,15 @@ class TestUnobservedTarget:
         r = run_cli("10.0", "60.0")
         assert r.returncode == 0, r.stderr
         out = r.stdout
-        assert "no LSST alerts" in out
+        assert "No LSST alerts" in out
         assert "northern edge" in out  # dec>15 footprint warning
-        assert "no visit scheduled" in out or "scheduled visits" in out
+        assert "No visit scheduled" in out or "Scheduled visits" in out
 
     def test_remote_south_coords(self):
         # far south field, likely no TNS object and sparse coverage
         r = run_cli("150.0", "-75.0")
         assert r.returncode == 0, r.stderr
-        assert "Rubin schedule" in r.stdout
+        assert "Rubin Schedule" in r.stdout
 
 
 class TestLiveTns:
@@ -109,7 +109,7 @@ class TestLiveTns:
         # fake name: catalog misses, live 404s, tool reports both
         r = run_cli("AT1999zzz")
         assert r.returncode != 0
-        assert "no TNS entry" in r.stdout
+        assert "No TNS entry" in r.stdout
         assert "not found on wis-tns.org" in r.stdout
 
 
