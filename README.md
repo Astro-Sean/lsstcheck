@@ -26,13 +26,15 @@ Options:
 | `--sched-hours` | 48 | schedule look-ahead, clamped to 1-48 h |
 | `--refresh-tns` | off | rebuild the TNS index |
 | `--live-tns` | off | live per-object check on wis-tns.org |
+| `--plot` | off | save the LASAIR lightcurve as a PNG |
+| `--plot-out` | `lsstcheck_<id>_lightcurve.png` | output path for `--plot` |
 
 ## What it reports
 
 | section | contents |
 |---|---|
 | TNS | catalog date, object name, reporting group, type, redshift, discovery date, separation, alternative names with their groups. Rows verified against the live site are tagged `live` |
-| LSST / LASAIR | diaObjectId, `LSST-*-DO-*` names, detection count, clickable object link (OSC 8; raw URL prints too) |
+| LSST / LASAIR | diaObjectId, `LSST-*-DO-*` names, detection count, clickable object link (OSC 8; raw URL prints too). `--plot` renders the difference-flux lightcurve from the same page |
 | Rubin Schedule | published-window extent, confirmed visit table when covered, coverage history (nights, last date, bands, median revisit), labeled estimate when unscheduled |
 
 The schedule section links to the schedule viewer pre-filtered to

@@ -55,6 +55,13 @@ class TestKnownTarget:
         assert r.returncode == 0, r.stderr
         assert "SN2024lwa" in r.stdout
 
+    def test_plot_flag(self, tmp_path):
+        out = tmp_path / "lc.png"
+        r = run_cli("--plot", "--plot-out", str(out), "2024lwa")
+        assert r.returncode == 0, r.stderr
+        assert "Lightcurve plot saved" in r.stdout
+        assert out.exists() and out.stat().st_size > 0
+
 
 class TestScheduledTarget:
     """313761042329501776: LSST object with no TNS entry, visits scheduled."""

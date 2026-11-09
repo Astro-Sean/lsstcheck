@@ -29,6 +29,7 @@ import sqlite3
 import sys
 import zipfile
 from datetime import datetime, timezone
+from html import unescape
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -540,8 +541,42 @@ class LasairWeb:
             out.append(rec)
         return out
 
+    @staticmethod
+    def _photometry(page):
+        """Parse the difference-photometry table into row dicts."""
+        i = page.find('id="exportLightcurve"')
+        if i < 0:
+            return []
+        j = page.find("</table>", i)
+        if j < 0:
+            return []
+        rows = []
+        for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", page[i:j], re.S):
+            cells = [
+                unescape(re.sub(r"<[^>]+>", "", c)).strip()
+                for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)
+            ]
+            if len(cells) < 4:
+                continue
+            try:
+                mjd = float(cells[0])
+            except ValueError:
+                continue
+            nums = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?",
+                              cells[3])
+            if len(nums) < 2:
+                continue
+            rows.append({
+                "mjd": mjd,
+                "utc": cells[1],
+                "band": cells[2],
+                "flux": float(nums[0]),
+                "flux_err": float(nums[1]),
+            })
+        return rows
+
     def object_page(self, dia_id):
-        """Fetch an object page; returns (coords, detection_count)."""
+        """Fetch an object page; returns (coords, ndet, photometry)."""
         try:
             r = self.s.get(f"{LASAIR_BASE}/objects/{dia_id}/", timeout=60)
             if r.status_code != 200:
@@ -557,7 +592,51 @@ class LasairWeb:
         m = re.search(r"Detection Count</td>\s*<td[^>]*>\s*([0-9]+)", html)
         if m:
             ndet = int(m.group(1))
-        return coords, ndet
+        return coords, ndet, self._photometry(html)
+
+
+# ---------------------------------------------------------------------------
+# plotting
+# ---------------------------------------------------------------------------
+
+BAND_COLORS = {
+    "u": "#9467bd", "g": "#2ca02c", "r": "#d62728",
+    "i": "#ff7f0e", "z": "#1f77b4", "y": "#17becf",
+}
+
+
+def plot_lightcurve(phot, title, out_path):
+    """Render difference-flux photometry to a PNG; returns out_path."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    by_band = {}
+    for row in phot:
+        by_band.setdefault(row["band"], []).append(row)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    order = [b for b in "ugrizy" if b in by_band]
+    order += [b for b in by_band if b not in order]
+    for band in order:
+        rows = by_band[band]
+        ax.errorbar(
+            [r["mjd"] for r in rows],
+            [r["flux"] for r in rows],
+            yerr=[r["flux_err"] for r in rows],
+            fmt="o", ms=4.5, capsize=2.5, elinewidth=0.8,
+            color=BAND_COLORS.get(band), label=f"{band}-band",
+        )
+    ax.axhline(0, color="0.4", lw=0.8, ls="--")
+    ax.set_xlabel("MJD")
+    ax.set_ylabel("Difference flux (nJy)")
+    ax.set_title(title)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -904,6 +983,11 @@ def main():
     ap.add_argument("--live-tns", action="store_true",
                     help="live per-object check on wis-tns.org "
                          "(name and diaObjectId inputs)")
+    ap.add_argument("--plot", action="store_true",
+                    help="save the LASAIR lightcurve as a PNG")
+    ap.add_argument("--plot-out", metavar="FILE",
+                    help="output path for --plot "
+                         "(default lsstcheck_<id>_lightcurve.png)")
     args = ap.parse_args()
 
     target = parse_target(args.target)
@@ -1038,6 +1122,22 @@ def main():
 
     sched_hours = min(48, max(1, args.sched_hours))
     print_schedule_section(ra, dec, args.days, sched_hours)
+
+    if args.plot:
+        phot = obj_page_info[2] if obj_page_info else []
+        if phot and lasair_objs:
+            oid = lasair_objs[0]["id"]
+            title = f"LSST {oid}"
+            if tns_rows and tns_rows[0].get("name"):
+                title = f"{tns_rows[0]['name']} / {oid}"
+            out = args.plot_out or f"lsstcheck_{oid}_lightcurve.png"
+            try:
+                plot_lightcurve(phot, title, out)
+                tp.info(f"Lightcurve plot saved: {out}")
+            except Exception as e:
+                tp.warn(f"Plot failed: {e}")
+        else:
+            tp.warn("--plot: no LASAIR photometry for this target")
 
     print()
     tp.header("Links")

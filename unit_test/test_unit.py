@@ -517,6 +517,16 @@ OBJECT_HTML = """
 <html><body>
 <a href="/search/?lon=338.196073d&lat=-9.447009d">map</a>
 <table><tr><td>Detection Count</td><td>9</td></tr></table>
+<table id="exportLightcurve">
+<thead><tr><th>MJD</th><th>UTC</th><th>band</th>
+<th>target diff flux</th></tr></thead>
+<tbody>
+<tr><td>61343.025657</td><td>2026-10-30 00:36:56</td><td>r</td>
+<td>-4498 &plusmn; 210</td><td>0.67</td></tr>
+<tr><td>61217.398292</td><td>2026-06-26 09:33:32</td><td>i</td>
+<td>6782 &plusmn; 233</td><td>0.91</td></tr>
+<tr><td>not-a-row</td></tr>
+</tbody></table>
 </body></html>
 """
 
@@ -539,9 +549,16 @@ class TestLasairParse:
         fake.text = OBJECT_HTML
         web.s = mock.Mock()
         web.s.get.return_value = fake
-        coords, ndet = web.object_page("12345")
+        coords, ndet, phot = web.object_page("12345")
         assert coords == (338.196073, -9.447009)
         assert ndet == 9
+        assert len(phot) == 2
+        assert phot[0]["band"] == "r"
+        assert phot[0]["mjd"] == pytest.approx(61343.025657)
+        assert phot[0]["flux"] == pytest.approx(-4498.0)
+        assert phot[0]["flux_err"] == pytest.approx(210.0)
+        assert phot[1]["band"] == "i"
+        assert phot[1]["flux"] == pytest.approx(6782.0)
 
     def test_object_page_404(self, lsc):
         web = lsc.LasairWeb()
@@ -550,6 +567,27 @@ class TestLasairParse:
         web.s = mock.Mock()
         web.s.get.return_value = fake
         assert web.object_page("999") is None
+
+    def test_photometry_no_table(self, lsc):
+        assert lsc.LasairWeb._photometry("<html>none</html>") == []
+
+
+class TestPlotLightcurve:
+    PHOT = [
+        {"mjd": 61343.0, "utc": "2026-10-30", "band": "r",
+         "flux": 100.0, "flux_err": 10.0},
+        {"mjd": 61344.0, "utc": "2026-10-31", "band": "i",
+         "flux": -50.0, "flux_err": 12.0},
+        {"mjd": 61345.0, "utc": "2026-11-01", "band": "r",
+         "flux": 300.0, "flux_err": 15.0},
+    ]
+
+    def test_writes_png(self, lsc, tmp_path):
+        out = lsc.plot_lightcurve(
+            self.PHOT, "test", str(tmp_path / "lc.png"))
+        assert out == str(tmp_path / "lc.png")
+        data = (tmp_path / "lc.png").read_bytes()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 # ---------------------------------------------------------------------------
