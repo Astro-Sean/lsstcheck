@@ -608,7 +608,11 @@ BAND_COLORS = {
 
 
 def lightcurve_fig(phot, title):
-    """Build the difference-flux figure; returns the Figure."""
+    """Build the difference-flux figure; returns the Figure.
+
+    Raw points plot faded underneath; squares mark inverse-variance
+    weighted nightly bins per band.
+    """
     import matplotlib.pyplot as plt
 
     by_band = {}
@@ -619,14 +623,30 @@ def lightcurve_fig(phot, title):
     order = [b for b in "ugrizy" if b in by_band]
     order += [b for b in by_band if b not in order]
     for band in order:
-        rows = by_band[band]
+        rows = sorted(by_band[band], key=lambda r: r["mjd"])
+        color = BAND_COLORS.get(band)
         ax.errorbar(
             [r["mjd"] for r in rows],
             [r["flux"] for r in rows],
             yerr=[r["flux_err"] for r in rows],
-            fmt="o", ms=4.5, capsize=2.5, elinewidth=0.8,
-            color=BAND_COLORS.get(band), label=f"{band}-band",
+            fmt="o", ms=3.5, capsize=2, elinewidth=0.6,
+            color=color, alpha=0.25,
         )
+        bins = {}
+        for r in rows:
+            bins.setdefault(int(r["mjd"] + 0.25), []).append(r)
+        bx, by, bye = [], [], []
+        for night in sorted(bins):
+            rs = bins[night]
+            w = np.array([1.0 / max(r["flux_err"], 1e-6) ** 2
+                          for r in rs])
+            f = np.array([r["flux"] for r in rs])
+            bx.append(float(np.mean([r["mjd"] for r in rs])))
+            by.append(float(np.sum(w * f) / np.sum(w)))
+            bye.append(float(np.sqrt(1.0 / np.sum(w))))
+        ax.errorbar(bx, by, yerr=bye, fmt="s", ms=6, capsize=3,
+                    elinewidth=1.0, color=color,
+                    label=f"{band}-band (nightly)")
     ax.axhline(0, color="0.4", lw=0.8, ls="--")
     ax.set_xlabel("MJD")
     ax.set_ylabel("Difference flux (nJy)")
