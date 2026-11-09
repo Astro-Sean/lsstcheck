@@ -9,17 +9,27 @@ sky coordinates.
 ```bash
 git clone https://github.com/Astro-Sean/lsstcheck.git
 cd lsstcheck
-ln -sf "$PWD/lsstcheck" ~/.local/bin/lsstcheck
+mkdir -p ~/.local/bin && ln -sf "$PWD/lsstcheck" ~/.local/bin/lsstcheck
 ```
 
-`~/.local/bin` is on PATH for most desktop setups, so `lsstcheck`
-then runs from any directory. The symlink points back at the clone,
-so keep the repo and `termprint.py` where they are. If the first
-run complains about missing packages:
+`~/.local/bin` is on PATH on most Linux desktops. On macOS it is
+not, so add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zprofile`
+(or pick a directory already on PATH). The symlink resolves back to
+the clone, so keep the repo and `termprint.py` where they are.
+
+The shebang is `/usr/bin/python3`, which on macOS comes with the
+Xcode command line tools. Install the packages for that
+interpreter:
 
 ```bash
 /usr/bin/python3 -m pip install --user -r requirements.txt
 ```
+
+If pip refuses with `externally-managed-environment`, add
+`--break-system-packages`; with `--user` it writes only to your home
+directory (Linux `~/.local`, macOS `~/Library/Python`). To run under
+another interpreter such as a venv or conda env, change the first
+line to `#!/usr/bin/env python3` and install there instead.
 
 ## Usage
 
