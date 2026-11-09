@@ -90,6 +90,13 @@ class TestHelpers:
     def test_coord_value_sexa_ra(self, lsc):
         assert lsc.coord_value("1h30m", is_ra=True) == pytest.approx(22.5)
 
+    def test_open_in_browser(self, lsc, monkeypatch):
+        calls = []
+        monkeypatch.setattr(lsc.webbrowser, "open",
+                            lambda u: calls.append(u) or True)
+        assert lsc.open_in_browser("https://x") is True
+        assert calls == ["https://x"]
+
 
 # ---------------------------------------------------------------------------
 # math and formatting

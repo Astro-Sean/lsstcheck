@@ -29,6 +29,7 @@ Options:
 | `--plot` | off | show the LASAIR lightcurve in a plot window |
 | `--save` | off | save the lightcurve plot and table to the current directory |
 | `--plot-out` | `lsstcheck_<id>_lightcurve.png` | PNG path for `--save` |
+| `--open-links` | off | open the LASAIR object page in a browser |
 
 ## What it reports
 

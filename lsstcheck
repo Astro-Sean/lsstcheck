@@ -29,6 +29,7 @@ import os
 import re
 import sqlite3
 import sys
+import webbrowser
 import zipfile
 from datetime import datetime, timezone
 from html import unescape
@@ -118,6 +119,11 @@ def osc8_link(url, text=None):
     if sys.stdout.isatty() and os.environ.get("TERM", "") != "dumb":
         return f"\x1b]8;;{url}\x07{text}\x1b]8;;\x07"
     return text
+
+
+def open_in_browser(url):
+    """Launch url in the default browser; True if it launched."""
+    return webbrowser.open(url)
 
 
 def ang_sep_deg(ra1, dec1, ra2, dec2):
@@ -1188,6 +1194,8 @@ def main():
     ap.add_argument("--plot-out", metavar="FILE",
                     help="PNG path for --save "
                          "(default lsstcheck_<id>_lightcurve.png)")
+    ap.add_argument("--open-links", action="store_true",
+                    help="open the LASAIR object page in a browser")
     args = ap.parse_args()
 
     target = parse_target(args.target)
@@ -1373,6 +1381,15 @@ def main():
         tp.info(f"TNS object: "
                 f"{osc8_link(TNS_LIVE_BASE + tns_slug)}")
     tp.info(f"Pointings skymap: {osc8_link(skymap_url(sched_hours))}")
+
+    if args.open_links:
+        if not lasair_objs:
+            tp.warn("--open-links: no LSST object to open")
+        elif open_in_browser(
+                f"{LASAIR_BASE}/objects/{lasair_objs[0]['id']}/"):
+            tp.info("Opened the LASAIR page in the browser")
+        else:
+            tp.warn("Could not open a browser window")
     return 0
 
 
