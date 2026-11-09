@@ -644,6 +644,7 @@ def lightcurve_fig(phot, title):
     downward triangles in the band color.
     """
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import AutoMinorLocator
 
     by_band = {}
     for row in phot:
@@ -735,6 +736,8 @@ def lightcurve_fig(phot, title):
     ax.grid(alpha=0.3)
     # magnitude axes run bright at the top, faint at the bottom
     ax.invert_yaxis()
+    ax.xaxis.set_minor_locator(AutoMinorLocator())
+    ax.yaxis.set_minor_locator(AutoMinorLocator())
     fig.tight_layout()
     return fig
 
