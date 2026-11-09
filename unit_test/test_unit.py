@@ -380,6 +380,126 @@ class TestTnsCatalog:
 
 
 # ---------------------------------------------------------------------------
+# live TNS lookup (mocked session)
+# ---------------------------------------------------------------------------
+
+TNS_OBJ_HTML = """
+<html><body>
+<h1 class="title" id="page-title"> SN 2024lwa </h1>
+<div class="field field-radec"><span class="name">RA/DEC</span><b>
+<div class="value">22:32:47 -09:26:49</b></div>
+<div class="alter-value">338.1960739 -9.4470094</div></div>
+<div class="field field-type"><span class="name">Type</span>
+<div class="value"><b>SN II</b></div></div>
+<div class="field field-redshift"><span class="name">Redshift</span>
+<div class="value"><b>0.05689</b></div></div>
+<div class="field field-reporting_group_name"><span class="name">RG</span>
+<div class="value"><b>Pan-STARRS</b></div></div>
+<div class="field field-source_group_name"><span class="name">SG</span>
+<div class="value"><b>Pan-STARRS</b></div></div>
+<div class="field field-discoverydate"><span class="name">DD</span>
+<div class="value"><b>2024-06-16 13:23:40</b></div></div>
+<div class="field field-discoverymag"><span class="name">DM</span>
+<div class="value"><b>21.24</b></div></div>
+<div class="field field-filter_name"><span class="name">F</span>
+<div class="value"><b>w-P1</b></div></div>
+<table><tbody>
+<tr><td class="cell-hostName"></td><td class="cell-internal_name">
+ZTF26abfwokm</td> <td class="cell-groups">ZTF</td></tr>
+<tr><td class="cell-hostName"></td><td class="cell-internal_name">
+LSST-AP-DO-170587106692825120</td> <td class="cell-groups">Rubin</td></tr>
+<tr><td class="cell-hostName"></td><td class="cell-internal_name">
+PS24emd</td> <td class="cell-groups">Pan-STARRS</td></tr>
+<tr><td class="cell-hostName"></td><td class="cell-internal_name">
+LSST-AP-DO-170587106692825120</td> <td class="cell-groups">Rubin</td></tr>
+</tbody></table>
+</body></html>
+"""
+
+
+class _Resp:
+    def __init__(self, status, text=""):
+        self.status_code = status
+        self.text = text
+
+
+class TestTnsLive:
+    def _web(self, lsc, resp):
+        web = lsc.TnsLive()
+        web.s = mock.Mock()
+        web.s.get.return_value = resp
+        return web
+
+    def test_parse_full(self, lsc):
+        web = self._web(lsc, _Resp(200))
+        row = web._parse("2024lwa", TNS_OBJ_HTML)
+        assert row["_live"] is True
+        assert row["prefix"] + row["name"] == "SN2024lwa"
+        assert row["type"] == "SN II"
+        assert row["redshift"] == pytest.approx(0.05689)
+        assert row["ra"] == pytest.approx(338.1960739)
+        assert row["dec"] == pytest.approx(-9.4470094)
+        assert row["reporting_group"] == "Pan-STARRS"
+        assert row["discoverymag"] == pytest.approx(21.24)
+        assert row["discmagfilter"] == "w-P1"
+        # duplicate internal name collapsed, groups attached
+        assert row["internal_names"].count("LSST-AP-DO") == 1
+        assert "ZTF26abfwokm (ZTF)" in row["_live_names"]
+        assert "PS24emd (Pan-STARRS)" in row["_live_names"]
+
+    def test_parse_missing_fields(self, lsc):
+        web = self._web(lsc, _Resp(200))
+        row = web._parse("x", "<html>nothing</html>")
+        assert row["ra"] is None and row["type"] is None
+        assert row["internal_names"] == ""
+        assert row["_live_names"] == []
+
+    def test_lookup_200(self, lsc):
+        web = self._web(lsc, _Resp(200, TNS_OBJ_HTML))
+        row = web.lookup("2024lwa")
+        assert row is not None and row["name"] == "2024lwa"
+
+    def test_lookup_404(self, lsc):
+        web = self._web(lsc, _Resp(404))
+        assert web.lookup("nope") is None
+
+    def test_lookup_redirect_rejected(self, lsc):
+        # unknown numeric slugs 302 to the homepage, which is a 200
+        # without an object title once redirects are not followed
+        web = self._web(lsc, _Resp(302))
+        assert web.lookup("123") is None
+
+    def test_lookup_soft404_rejected(self, lsc):
+        web = self._web(lsc, _Resp(200, "<html>homepage</html>"))
+        assert web.lookup("123") is None
+
+    def test_lookup_network_error(self, lsc):
+        import requests as rq
+        web = lsc.TnsLive()
+        web.s = mock.Mock()
+        web.s.get.side_effect = rq.ConnectionError("down")
+        assert web.lookup("2024lwa") is None
+
+
+class TestLiveSlugs:
+    def test_tns_name(self, lsc):
+        assert lsc.live_tns_slugs("AT2024lwa", []) == [
+            "2024lwa", "at2024lwa"]
+
+    def test_catalog_row_name_first(self, lsc):
+        rows = [{"name": "2024lwa"}]
+        assert lsc.live_tns_slugs("ZTF26abfwokm", rows) == [
+            "2024lwa", "ztf26abfwokm"]
+
+    def test_sanitizes_garbage(self, lsc):
+        assert lsc.live_tns_slugs("!!!", []) == []
+
+    def test_dedupes(self, lsc):
+        rows = [{"name": "2024lwa"}]
+        assert lsc.live_tns_slugs("2024lwa", rows) == ["2024lwa"]
+
+
+# ---------------------------------------------------------------------------
 # LASAIR web parsing (fixtures, no network)
 # ---------------------------------------------------------------------------
 

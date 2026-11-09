@@ -46,6 +46,7 @@ TNS_ZIP_URL = (
     "tns_public_objects.csv.zip"
 )
 TNS_UA = 'tns_marker{"tns_id":0,"type":"guest","name":"lsstcheck"}'
+TNS_LIVE_BASE = "https://www.wis-tns.org/object/"
 LASAIR_BASE = "https://lasair.lsst.ac.uk"
 OBSLOCTAP = "https://usdf-rsp.slac.stanford.edu/obsloctap"
 SCHEDULE_VIEWER = OBSLOCTAP + "/static/viewer.html"
@@ -376,6 +377,108 @@ class TnsCatalog:
         return rows
 
 
+class TnsLive:
+    """Live per-object lookup on wis-tns.org; no API key needed.
+
+    The public object page rejects the TNS guest marker with a 401,
+    so this uses a plain browser User-Agent.
+    """
+
+    UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+
+    def __init__(self):
+        self.s = requests.Session()
+        self.s.headers["User-Agent"] = self.UA
+
+    def lookup(self, slug):
+        """Return a catalog-like row for /object/<slug>, or None."""
+        try:
+            r = self.s.get(f"{TNS_LIVE_BASE}{slug}", timeout=30,
+                           allow_redirects=False)
+        except requests.RequestException:
+            return None
+        # unknown slugs either 404 or 302 to the homepage; a real
+        # object page is a 200 with an object title
+        if r.status_code != 200 or 'id="page-title"' not in r.text:
+            return None
+        return self._parse(slug, r.text)
+
+    @staticmethod
+    def _field(html, name):
+        m = re.search(rf'field-{re.escape(name)}">.*?<b>([^<]*)</b>',
+                      html, re.S)
+        return m.group(1).strip() if m else None
+
+    @staticmethod
+    def _num(text):
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return None
+
+    def _parse(self, slug, html):
+        coords = None
+        m = re.search(r'alter-value">(-?[0-9.]+)\s+(-?[0-9.]+)<', html)
+        if m:
+            coords = (float(m.group(1)), float(m.group(2)))
+        title = ""
+        m = re.search(r'page-title">\s*([^<]+)', html)
+        if m:
+            title = m.group(1).strip()
+        prefix = title.replace(slug, "").strip() if slug in title else ""
+        pairs = []
+        seen = set()
+        for m in re.finditer(
+                r'cell-internal_name">([^<]*)</td>\s*'
+                r'<td class="cell-groups">([^<]*)</td>', html):
+            name = m.group(1).strip()
+            if name and name not in seen:
+                seen.add(name)
+                pairs.append((name, m.group(2).strip()))
+        ra = dec = None
+        if coords:
+            ra, dec = coords
+        return {
+            "objid": None,
+            "prefix": prefix,
+            "name": slug,
+            "ra": ra,
+            "dec": dec,
+            "redshift": self._num(self._field(html, "redshift")),
+            "type": self._field(html, "type"),
+            "discoverydate": self._field(html, "discoverydate"),
+            "discoverymag": self._num(self._field(html, "discoverymag")),
+            "discmagfilter": self._field(html, "filter_name"),
+            "reporting_group": self._field(html, "reporting_group_name"),
+            "source_group": self._field(html, "source_group_name"),
+            "internal_names": ",".join(n for n, _ in pairs),
+            "_live_names": [f"{n} ({g})" if g else n
+                            for n, g in pairs],
+            "_live": True,
+            "_sep": None,
+        }
+
+
+def live_tns_slugs(raw, tns_rows):
+    """Candidate /object/ slugs for a live TNS lookup, best first."""
+    cands = []
+    key = tns_key(raw)
+    if key:
+        cands.append(key)
+    if tns_rows and tns_rows[0].get("name"):
+        cands.append(tns_rows[0]["name"])
+    low = re.sub(r"[^a-z0-9]+", "", raw.lower())
+    if low:
+        cands.append(low)
+    out = []
+    for c in cands:
+        c = re.sub(r"[^A-Za-z0-9_-]", "", c)
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # LASAIR web search (no token needed; uses the public search form)
 # ---------------------------------------------------------------------------
@@ -525,10 +628,12 @@ def tns_display_name(row):
     return f"{prefix}{name}".strip() or str(row.get("objid", "?"))
 
 
-def print_tns_section(rows, catalog_date=None):
+def print_tns_section(rows, catalog_date=None, live_note=None):
     tp.header("TNS")
     if catalog_date:
         tp.info(f"catalog date: {catalog_date}")
+    if live_note:
+        tp.info(live_note)
     if not rows:
         tp.info("no TNS entry for this target")
         return
@@ -544,8 +649,12 @@ def print_tns_section(rows, catalog_date=None):
             bits.append(f"disc {row['discoverydate'][:10]}")
         if row.get("_sep") is not None:
             bits.append(f"sep {row['_sep']:.1f} arcsec")
+        if row.get("_live"):
+            bits.append("live")
         tp.ok(" | ".join(bits))
-        names = internal_names_list(row.get("internal_names"))
+        names = row.get("_live_names")
+        if not names:
+            names = internal_names_list(row.get("internal_names"))
         if names:
             tp.info("alternative names:")
             for n in names[:10]:
@@ -787,6 +896,9 @@ def main():
                     help="schedule look-ahead hours, 1-48 (default 48)")
     ap.add_argument("--refresh-tns", action="store_true",
                     help="force TNS index rebuild")
+    ap.add_argument("--live-tns", action="store_true",
+                    help="live per-object check on wis-tns.org "
+                         "(name and diaObjectId inputs)")
     args = ap.parse_args()
 
     target = parse_target(args.target)
@@ -821,6 +933,34 @@ def main():
         elif target["kind"] == "coords":
             tns_rows = cat.cone(target["ra"], target["dec"],
                                 args.tns_radius)[:3]
+
+    # live wis-tns.org check: automatic when the catalog misses, or
+    # always with --live-tns. Only works for named inputs.
+    live_note = None
+    if target["kind"] in ("name", "lsst_name", "dia_id"):
+        slugs = live_tns_slugs(target["raw"], tns_rows)
+        want_live = bool(slugs) and (args.live_tns or not tns_rows)
+        if want_live:
+            live = TnsLive()
+            live_row = None
+            for slug in slugs:
+                live_row = live.lookup(slug)
+                if live_row is not None:
+                    break
+            if live_row is None:
+                if not tns_rows:
+                    live_note = "live check: not found on wis-tns.org"
+            elif not tns_rows:
+                tns_rows = [live_row]
+                if ra is None and live_row.get("ra") is not None:
+                    ra, dec = live_row["ra"], live_row["dec"]
+                    coords_source = "TNS (live)"
+            else:
+                row = tns_rows[0]
+                if live_row.get("internal_names"):
+                    row["internal_names"] = live_row["internal_names"]
+                    row["_live_names"] = live_row["_live_names"]
+                row["_live"] = True
 
     if target["kind"] == "coords":
         ra, dec = target["ra"], target["dec"]
@@ -867,26 +1007,28 @@ def main():
                 coords_source = "LASAIR"
                 break
 
-    if ra is None:
-        tp.die("could not determine coordinates for this target")
-
     # ---- print ----
     tp.header("target")
     if target["kind"] == "name":
         tp.info(f"name: {target['raw']}")
     elif target["kind"] in ("dia_id", "lsst_name"):
         tp.info(f"LSST id: {target['dia_id']}")
-    tp.info(f"position: {ra:.6f}, {dec:.6f}"
-            + (f"  ({coords_source})" if coords_source else ""))
-    if dec > 15.0:
-        tp.warn(f"dec {dec:+.1f} is near or past the northern edge of "
-                "the LSST survey footprint; coverage may be rare")
+    if ra is not None:
+        tp.info(f"position: {ra:.6f}, {dec:.6f}"
+                + (f"  ({coords_source})" if coords_source else ""))
+        if dec > 15.0:
+            tp.warn(f"dec {dec:+.1f} is near or past the northern edge "
+                    "of the LSST survey footprint; coverage may be rare")
 
     detections = (obj_page_info[1]
                   if obj_page_info else None)
     print_tns_section(tns_rows,
-                      cat.csv_date if cat is not None else None)
+                      cat.csv_date if cat is not None else None,
+                      live_note)
     print_lsst_section(lasair_objs, tns_rows, detections)
+
+    if ra is None:
+        tp.die("could not determine coordinates for this target")
 
     sched_hours = min(48, max(1, args.sched_hours))
     print_schedule_section(ra, dec, args.days, sched_hours)
@@ -899,6 +1041,14 @@ def main():
     tp.info(f"LASAIR cone search: "
             f"{osc8_link(f'{LASAIR_BASE}/search/{ra:.6f},{dec:.6f},'
                         f'{args.radius:g}')}")
+    tns_slug = None
+    if tns_rows and tns_rows[0].get("name"):
+        tns_slug = tns_rows[0]["name"]
+    elif target["kind"] == "name":
+        tns_slug = tns_key(target["raw"])
+    if tns_slug:
+        tp.info(f"TNS object: "
+                f"{osc8_link(TNS_LIVE_BASE + tns_slug)}")
     tp.info(f"pointings skymap: {osc8_link(skymap_url(sched_hours))}")
     return 0
 

@@ -25,12 +25,13 @@ Options:
 | `--days` | 120 | exposure history window for the cadence estimate |
 | `--sched-hours` | 48 | schedule look-ahead, clamped to 1-48 h |
 | `--refresh-tns` | off | rebuild the TNS index |
+| `--live-tns` | off | live per-object check on wis-tns.org |
 
 ## What it reports
 
 | section | contents |
 |---|---|
-| TNS | catalog date, object name, reporting group, type, redshift, discovery date, separation, alternative names |
+| TNS | catalog date, object name, reporting group, type, redshift, discovery date, separation, alternative names with their groups. Rows verified against the live site are tagged `live` |
 | LSST / LASAIR | diaObjectId, `LSST-*-DO-*` names, detection count, clickable object link (OSC 8; raw URL prints too) |
 | Rubin schedule | published-window extent, confirmed visit table when covered, coverage history (nights, last date, bands, median revisit), labeled estimate when unscheduled |
 
@@ -75,7 +76,11 @@ estimated next coverage ~2026-11-11 (in ~2 d)
 ## Data sources
 
 - TNS public objects CSV dump, no credentials. Cached as sqlite in
-  `~/.cache/lsstcheck/` and rebuilt when the daily file is newer.
+  `~/.cache/lsstcheck/` and rebuilt when the daily file is newer. For
+  name and diaObjectId inputs the tool also checks the live object
+  page on wis-tns.org when the catalog misses, or always with
+  `--live-tns`; live hits show alternative names with their reporting
+  groups.
 - LASAIR public web search at lasair.lsst.ac.uk, no API token needed.
 - Rubin ObsLocTAP at usdf-rsp.slac.stanford.edu/obsloctap:
   `/schedule` for the published window, `/exposures` for history.

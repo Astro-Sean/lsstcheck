@@ -94,6 +94,25 @@ class TestUnobservedTarget:
         assert "Rubin schedule" in r.stdout
 
 
+class TestLiveTns:
+    """Live wis-tns.org checks: --live-tns flag and catalog-miss path."""
+
+    def test_live_flag_marks_row(self):
+        r = run_cli("--live-tns", "2024lwa")
+        assert r.returncode == 0, r.stderr
+        assert "| live" in r.stdout
+        # live page reports alternative names with their groups
+        assert "ZTF26abfwokm (ZTF)" in r.stdout
+        assert "wis-tns.org/object/2024lwa" in r.stdout
+
+    def test_catalog_miss_falls_back_to_live(self):
+        # fake name: catalog misses, live 404s, tool reports both
+        r = run_cli("AT1999zzz")
+        assert r.returncode != 0
+        assert "no TNS entry" in r.stdout
+        assert "not found on wis-tns.org" in r.stdout
+
+
 class TestBadInput:
     def test_no_args_exits_nonzero(self):
         r = run_cli()
