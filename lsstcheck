@@ -654,6 +654,7 @@ def lightcurve_fig(phot, title):
     spares = iter(MARKER_SPARES)
     for band in order:
         markers[band] = BAND_MARKERS.get(band) or next(spares, "o")
+    any_limits = False
     for band in order:
         marker = markers[band]
         rows = sorted(by_band[band], key=lambda r: r["mjd"])
@@ -672,6 +673,7 @@ def lightcurve_fig(phot, title):
                 markeredgewidth=0.8,
             )
         if lim:
+            any_limits = True
             ax.plot(
                 [r["mjd"] for r in lim],
                 flux_to_mag([max(r["flux_err"], 1e-6)
@@ -705,9 +707,15 @@ def lightcurve_fig(phot, title):
                         capsize=3, elinewidth=1.0, color=color,
                         label=f"{band}-band (nightly)")
         if bl_x:
+            any_limits = True
             ax.plot(bl_x, bl_y, "v", ms=7, color=color,
-                    markerfacecolor="white", markeredgewidth=1.0,
-                    label=f"{band}-band limits (nightly)")
+                    markerfacecolor="white", markeredgewidth=1.0)
+    if any_limits:
+        # one grey proxy keeps the legend short; the points themselves
+        # stay in band colors
+        ax.errorbar([], [], fmt="v", ms=7, color="0.5",
+                    markerfacecolor="white", markeredgecolor="0.5",
+                    markeredgewidth=1.0, label="upper limits")
     ax.set_xlabel("MJD")
     ax.set_ylabel("Difference mag (AB)")
     ax.set_title(title)
