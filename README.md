@@ -4,6 +4,23 @@ Cross-match a transient against LSST, the TNS public catalog, and the
 Rubin schedule. Give it a TNS name, survey name, LSST diaObjectId, or
 sky coordinates.
 
+## To use as a CLI
+
+```bash
+git clone https://github.com/Astro-Sean/lsstcheck.git
+cd lsstcheck
+ln -sf "$PWD/lsstcheck" ~/.local/bin/lsstcheck
+```
+
+`~/.local/bin` is on PATH for most desktop setups, so `lsstcheck`
+then runs from any directory. The symlink points back at the clone,
+so keep the repo and `termprint.py` where they are. If the first
+run complains about missing packages:
+
+```bash
+/usr/bin/python3 -m pip install --user -r requirements.txt
+```
+
 ## Usage
 
 ```bash
