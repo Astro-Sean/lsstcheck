@@ -620,6 +620,8 @@ def flux_to_mag(flux):
     """AB mag from difference flux in nJy; NaN where flux <= 0."""
     flux = np.asarray(flux, dtype=float)
     with np.errstate(divide="ignore", invalid="ignore"):
+        # log of a non-positive flux is undefined; the mask below
+        # drops those values anyway, so feed the log a harmless 1.0
         safe = np.where(flux > 0, flux, 1.0)
         mag = FLUX_ZP_NJY - 2.5 * np.log10(safe)
     return np.where(flux > 0, mag, np.nan)
@@ -650,6 +652,7 @@ def lightcurve_fig(phot, title):
     fig, ax = plt.subplots(figsize=(8, 4.5))
     order = [b for b in "ugrizy" if b in by_band]
     order += [b for b in by_band if b not in order]
+    # bands outside ugrizy borrow spare marker shapes
     markers = {}
     spares = iter(MARKER_SPARES)
     for band in order:
@@ -661,6 +664,8 @@ def lightcurve_fig(phot, title):
         color = BAND_COLORS.get(band)
         det = [r for r in rows if r["flux"] > 0]
         lim = [r for r in rows if r["flux"] <= 0]
+        # a non-positive flux has no magnitude, so it plots as an
+        # upper limit at the 1-sigma flux error instead
         if det:
             ax.errorbar(
                 [r["mjd"] for r in det],
@@ -669,6 +674,8 @@ def lightcurve_fig(phot, title):
                                      [r["flux_err"] for r in det]),
                 fmt=marker, ms=4, capsize=2, elinewidth=0.6,
                 color=color, alpha=0.25,
+                # white face keeps the raw points faint under the
+                # filled bins drawn on top
                 markerfacecolor="white", markeredgecolor=color,
                 markeredgewidth=0.8,
             )
@@ -682,6 +689,8 @@ def lightcurve_fig(phot, title):
                 markerfacecolor="white", markeredgecolor=color,
                 markeredgewidth=0.8,
             )
+        # int(mjd + 0.25) bins by night with the edge at MJD frac 0.75,
+        # mid-afternoon in Chile, so one night's visits stay together
         bins = {}
         for r in rows:
             bins.setdefault(int(r["mjd"] + 0.25), []).append(r)
@@ -689,6 +698,9 @@ def lightcurve_fig(phot, title):
         bl_x, bl_y = [], []
         for night in sorted(bins):
             rs = bins[night]
+            # average in flux space because the errors are flux
+            # errors; averaging mags first would bias the mean. The
+            # floor keeps a zero sigma from making a weight infinite.
             w = np.array([1.0 / max(r["flux_err"], 1e-6) ** 2
                           for r in rs])
             f = np.array([r["flux"] for r in rs])
@@ -721,6 +733,7 @@ def lightcurve_fig(phot, title):
     ax.set_title(title)
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
+    # magnitude axes run bright at the top, faint at the bottom
     ax.invert_yaxis()
     fig.tight_layout()
     return fig
@@ -1285,6 +1298,8 @@ def main():
     print_schedule_section(ra, dec, args.days, sched_hours)
 
     if args.plot or args.save:
+        # photometry rides along on the object page fetch, so plotting
+        # adds no extra request
         phot = obj_page_info[2] if obj_page_info else []
         if phot and lasair_objs:
             oid = lasair_objs[0]["id"]
@@ -1292,6 +1307,7 @@ def main():
             if tns_rows and tns_rows[0].get("name"):
                 title = f"{tns_rows[0]['name']} / {oid}"
             try:
+                # a plot failure should not sink the whole report
                 if args.save:
                     png = (args.plot_out
                            or f"lsstcheck_{oid}_lightcurve.png")
