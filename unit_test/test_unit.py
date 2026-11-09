@@ -249,6 +249,78 @@ class TestScheduleUrls:
         assert url.endswith("/skymap?start=now&time=48")
 
 
+class TestScheduledRegionStats:
+    NOW = 60000.0
+
+    def test_counts_nearby_pointings(self, lsc):
+        # 2 deg away: outside FOV but inside the 3 deg region radius
+        visits = [_visit(12.0, -20.0, self.NOW + 0.5),
+                  _visit(12.0, -20.0, self.NOW + 0.5 + 5 / 1440.0)]
+        st = lsc.scheduled_region_stats(visits, 10.0, -20.0, self.NOW)
+        assert st["nights"] == 1
+        assert st["pointings"] == 2
+        assert st["bands"] == ["r"]
+        assert st["nearest_sep"] == pytest.approx(1.88, abs=0.02)
+        assert st["nearest_band"] == "r"
+
+    def test_ignores_far_and_past(self, lsc):
+        visits = [_visit(20.0, -20.0, self.NOW + 0.5),
+                  _visit(10.5, -20.0, self.NOW - 1.0)]
+        st = lsc.scheduled_region_stats(visits, 10.0, -20.0, self.NOW)
+        assert st["pointings"] == 0
+        assert st["nights"] == 0
+        # nearest still tracks the far future pointing (~9.4 deg)
+        assert st["nearest_sep"] == pytest.approx(9.4, abs=0.2)
+
+    def test_aborted_skipped(self, lsc):
+        visits = [_visit(10.5, -20.0, self.NOW + 0.5,
+                         status="Aborted")]
+        st = lsc.scheduled_region_stats(visits, 10.0, -20.0, self.NOW)
+        assert st["pointings"] == 0
+        assert st["nearest_mjd"] is None
+
+    def test_bands_collected(self, lsc):
+        visits = [_visit(11.0, -20.0, self.NOW + 0.5, band="g"),
+                  _visit(11.5, -20.0, self.NOW + 0.6, band="i")]
+        st = lsc.scheduled_region_stats(visits, 10.0, -20.0, self.NOW)
+        assert st["bands"] == ["g", "i"]
+
+    def test_empty(self, lsc):
+        st = lsc.scheduled_region_stats([], 10.0, -20.0, self.NOW)
+        assert st["pointings"] == 0
+        assert st["nearest_mjd"] is None
+
+
+class TestRevisitEstimate:
+    NOW = 60010.0
+
+    def test_regular_cadence(self, lsc):
+        # nights every 2 d, last at 60008 -> next ~60010+ rolled fwd
+        est = lsc.revisit_estimate([60000, 60002, 60004, 60006,
+                                    60008], self.NOW)
+        assert est is not None
+        est_mjd, med, gaps = est
+        assert med == pytest.approx(2.0)
+        assert est_mjd >= self.NOW
+        assert len(gaps) == 4
+
+    def test_single_gap(self, lsc):
+        est = lsc.revisit_estimate([60000, 60003], self.NOW)
+        assert est is not None
+        assert est[1] == pytest.approx(3.0)
+
+    def test_too_few_nights(self, lsc):
+        assert lsc.revisit_estimate([60000], self.NOW) is None
+        assert lsc.revisit_estimate([], self.NOW) is None
+
+    def test_rolls_forward(self, lsc):
+        # stale history: last night far in the past, estimate must
+        # land in the future
+        est = lsc.revisit_estimate([59000, 59002, 59004], self.NOW)
+        assert est is not None
+        assert est[0] >= self.NOW
+
+
 class TestScheduleHorizon:
     def test_horizon_hours(self, lsc):
         visits = [{"t_max": 100.5}, {"t_max": 101.0}, {"bad": 1}]

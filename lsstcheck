@@ -61,6 +61,8 @@ TNS_DB = CACHE_DIR / "tns_public_objects.db"
 
 # LSSTCam field of view is ~3.5 deg across, so the covering radius is 1.75.
 FOV_RADIUS_DEG = 1.75
+REGION_RADIUS_DEG = 3.0
+NEAREST_REPORT_DEG = 5.0
 SCHEDULE_HOURS = 48
 EXPOSURE_DAYS = 120
 
@@ -886,6 +888,71 @@ def covered_nights(rows, ra, dec):
     return nights
 
 
+def scheduled_region_stats(visits, ra, dec, now_mjd,
+                           radius_deg=REGION_RADIUS_DEG):
+    """Summarize scheduled pointings near the target in the window.
+
+    Wider than the FOV check - this asks whether the scheduler plans
+    to observe the region at all, and in which bands. Returns a dict
+    with night/pointing counts inside radius_deg, the band set, and
+    the nearest pointing's time, separation, and band.
+    """
+    need = ("s_ra", "s_dec", "t_min", "em_min", "em_max")
+    visits = [v for v in visits
+              if isinstance(v, dict) and all(k in v for k in need)]
+    out = {"nights": 0, "pointings": 0, "bands": [],
+           "nearest_mjd": None, "nearest_sep": None,
+           "nearest_band": None}
+    if not visits:
+        return out
+    s_ra = np.array([float(v["s_ra"]) for v in visits])
+    s_dec = np.array([float(v["s_dec"]) for v in visits])
+    sep = ang_sep_deg(ra, dec, s_ra, s_dec)
+    nights = set()
+    bands = set()
+    best = None
+    for v, s in zip(visits, sep):
+        if v.get("execution_status") == "Aborted":
+            continue
+        if v["t_min"] <= now_mjd - 0.03:
+            continue
+        s = float(s)
+        if best is None or s < best[0]:
+            best = (s, v)
+        if s >= radius_deg:
+            continue
+        out["pointings"] += 1
+        nights.add(int(v["t_min"] + 0.25))
+        bands.add(band_name(v["em_min"], v["em_max"]))
+    out["nights"] = len(nights)
+    out["bands"] = sorted(bands)
+    if best is not None:
+        out["nearest_mjd"] = float(best[1]["t_min"])
+        out["nearest_sep"] = best[0]
+        out["nearest_band"] = band_name(best[1]["em_min"],
+                                      best[1]["em_max"])
+    return out
+
+
+def revisit_estimate(night_keys, now_mjd):
+    """Project next coverage from covered-night indices.
+
+    Returns (est_mjd, med_gap, gaps) or None with fewer than two
+    nights. gaps are the night-to-night intervals in days.
+    """
+    keys = sorted(int(k) for k in night_keys)
+    if len(keys) < 2:
+        return None
+    gaps = np.diff(np.array(keys, dtype=float))
+    med = float(np.median(gaps))
+    if med <= 0:
+        return None
+    est = float(keys[-1]) + med
+    while est < now_mjd:
+        est += med
+    return est, med, gaps
+
+
 def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
     print()
     tp.header("Rubin Schedule")
@@ -920,6 +987,25 @@ def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
                     f"(reaches ~{horizon_h:.0f} h ahead)")
         else:
             tp.info("No visit scheduled in the published window")
+        stats = scheduled_region_stats(visits, ra, dec, now)
+        if stats["pointings"]:
+            band_str = ", ".join(stats["bands"]) or "-"
+            night_word = ("night" if stats["nights"] == 1
+                          else "nights")
+            tp.info(f'{stats["pointings"]} pointings within '
+                    f'~{REGION_RADIUS_DEG:.0f} deg planned on '
+                    f'{stats["nights"]} {night_word} '
+                    f'(bands: {band_str})')
+        else:
+            tp.info(f"No pointings within "
+                    f"~{REGION_RADIUS_DEG:.0f} deg planned "
+                    "in the window")
+        if (stats["nearest_mjd"] is not None
+                and stats["nearest_sep"] <= NEAREST_REPORT_DEG):
+            tp.info(f'Closest scheduled pointing ~'
+                    f'{fmt_mjd_iso(stats["nearest_mjd"])}: '
+                    f'{stats["nearest_sep"]:.1f} deg away, '
+                    f'{stats["nearest_band"]}-band')
 
     tp.info("Schedule viewer, pointings near this field: "
             f"{osc8_link(schedule_viewer_url(ra, dec, sched_hours))}")
@@ -938,32 +1024,47 @@ def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
         return
 
     nights = covered_nights(rows, ra, dec)
-    if len(nights) >= 2:
+    est = revisit_estimate(nights.keys(), now)
+    if est is not None:
+        est_mjd, med_gap, gaps = est
+        n_n = len(gaps) + 1
         keys = sorted(nights)
         last_mjd = max(m for m, _ in nights[keys[-1]])
-        gaps = np.diff(keys).astype(float)
-        med_gap = float(np.median(gaps))
-        # roll the estimate forward so it lands in the future
-        est_mjd = last_mjd + med_gap
-        while est_mjd < now:
-            est_mjd += med_gap
         bands = sorted({e.get("band", "?") for es in nights.values()
                         for _, e in es})
         tp.kv("Coverage history",
-              f"{len(keys)} nights in {days} d, last {iso_date(last_mjd)}")
+              f"{n_n} nights in {days} d, last {iso_date(last_mjd)}")
         tp.kv("Median revisit", f"{med_gap:.1f} d")
         tp.kv("Bands", ", ".join(bands))
         if not hits:
-            tp.ok(f"Estimated next coverage ~{iso_date(est_mjd)} "
-                  f"(in ~{est_mjd - now:.0f} d)")
+            in_d = est_mjd - now
+            # robust needs enough nights and revisit gaps that do not
+            # scatter widely; anything less is flagged, not hidden
+            if n_n >= 5 and gaps.max() - gaps.min() <= med_gap:
+                tp.ok(f"Estimated next coverage ~{iso_date(est_mjd)} "
+                      f"(in ~{in_d:.0f} d; {n_n} nights of history)")
+            elif n_n < 5:
+                tp.warn(f"Estimated next coverage ~{iso_date(est_mjd)} "
+                        f"(in ~{in_d:.0f} d) - low confidence: "
+                        f"only {n_n} covered nights")
+            else:
+                tp.warn(f"Estimated next coverage ~{iso_date(est_mjd)} "
+                        f"(in ~{in_d:.0f} d) - low confidence: revisit "
+                        f"gaps range {gaps.min():.0f}-"
+                        f"{gaps.max():.0f} d")
     elif nights:
         last_mjd = max(m for m, _ in nights[max(nights)])
         tp.kv("Coverage history", "one night only")
         tp.kv("Last covered", iso_date(last_mjd))
-        tp.info("Too few repeats to estimate the next coverage")
+        if not hits:
+            tp.warn("Cannot estimate next coverage: only one "
+                    "covered night in the window")
     else:
         tp.info(f"No exposures cover this position in the last "
                 f"{days} d")
+        if not hits:
+            tp.warn("Cannot estimate next coverage: no covered "
+                    "nights in the window")
 
 
 # ---------------------------------------------------------------------------
