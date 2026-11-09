@@ -629,14 +629,34 @@ class TestLightcurve:
         out = tmp_path / "lc.png"
         fig.savefig(out, dpi=100)
         assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+        # magnitude axis: bright (low mag) at the top
+        assert fig.axes[0].yaxis_inverted()
 
     def test_write_csv(self, lsc, tmp_path):
         out = tmp_path / "lc.csv"
         lsc.write_lightcurve_csv(str(out), self.PHOT)
         lines = out.read_text().strip().splitlines()
-        assert lines[0] == "mjd,utc,band,flux,flux_err"
+        assert lines[0] == "mjd,utc,band,flux,flux_err,mag,mag_err"
         assert len(lines) == 4
         assert lines[1].startswith("61343.0,2026-10-30,r,100.0")
+        # negative-flux row gets empty mag columns
+        assert lines[2].endswith(",,")
+
+
+class TestFluxToMag:
+    def test_zeropoint(self, lsc):
+        # matches the value LASAIR reports for this flux
+        assert lsc.flux_to_mag(30906.55) == pytest.approx(20.175,
+                                                         abs=1e-3)
+
+    def test_nonpositive_is_nan(self, lsc):
+        assert np.isnan(lsc.flux_to_mag(0.0))
+        assert np.isnan(lsc.flux_to_mag(-100.0))
+
+    def test_mag_err(self, lsc):
+        # 10% flux error -> ~0.109 mag error
+        assert lsc.flux_to_mag_err(100.0, 10.0) == pytest.approx(
+            0.10857, abs=1e-4)
 
 
 # ---------------------------------------------------------------------------

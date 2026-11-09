@@ -68,7 +68,7 @@ class TestKnownTarget:
         csv = tmp_path / "lc.csv"
         assert csv.exists()
         assert csv.read_text().splitlines()[0] == \
-            "mjd,utc,band,flux,flux_err"
+            "mjd,utc,band,flux,flux_err,mag,mag_err"
 
     def test_plot_flag_runs(self):
         # headless: plt.show() is a no-op under Agg, just check rc

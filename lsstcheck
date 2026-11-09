@@ -606,12 +606,33 @@ BAND_COLORS = {
     "i": "#ff7f0e", "z": "#1f77b4", "y": "#17becf",
 }
 
+# AB magnitude zeropoint for flux in nanoJanskys
+FLUX_ZP_NJY = 31.4
+
+
+def flux_to_mag(flux):
+    """AB mag from difference flux in nJy; NaN where flux <= 0."""
+    flux = np.asarray(flux, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        safe = np.where(flux > 0, flux, 1.0)
+        mag = FLUX_ZP_NJY - 2.5 * np.log10(safe)
+    return np.where(flux > 0, mag, np.nan)
+
+
+def flux_to_mag_err(flux, flux_err):
+    """1-sigma magnitude error propagated from flux errors."""
+    flux = np.asarray(flux, dtype=float)
+    flux_err = np.asarray(flux_err, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return 1.0857 * flux_err / flux
+
 
 def lightcurve_fig(phot, title):
-    """Build the difference-flux figure; returns the Figure.
+    """Build the AB-mag lightcurve figure; returns the Figure.
 
-    Raw points plot faded underneath; squares mark inverse-variance
-    weighted nightly bins per band.
+    Detections plot as faded points; non-detections as faded upper
+    limits. Squares mark inverse-variance weighted nightly bins per
+    band, with downward triangles for bins consistent with zero flux.
     """
     import matplotlib.pyplot as plt
 
@@ -625,34 +646,57 @@ def lightcurve_fig(phot, title):
     for band in order:
         rows = sorted(by_band[band], key=lambda r: r["mjd"])
         color = BAND_COLORS.get(band)
-        ax.errorbar(
-            [r["mjd"] for r in rows],
-            [r["flux"] for r in rows],
-            yerr=[r["flux_err"] for r in rows],
-            fmt="o", ms=3.5, capsize=2, elinewidth=0.6,
-            color=color, alpha=0.25,
-        )
+        det = [r for r in rows if r["flux"] > 0]
+        lim = [r for r in rows if r["flux"] <= 0]
+        if det:
+            ax.errorbar(
+                [r["mjd"] for r in det],
+                flux_to_mag([r["flux"] for r in det]),
+                yerr=flux_to_mag_err([r["flux"] for r in det],
+                                     [r["flux_err"] for r in det]),
+                fmt="o", ms=3.5, capsize=2, elinewidth=0.6,
+                color=color, alpha=0.25,
+            )
+        if lim:
+            ax.plot(
+                [r["mjd"] for r in lim],
+                flux_to_mag([max(r["flux_err"], 1e-6)
+                             for r in lim]),
+                "v", ms=4, color=color, alpha=0.25,
+            )
         bins = {}
         for r in rows:
             bins.setdefault(int(r["mjd"] + 0.25), []).append(r)
-        bx, by, bye = [], [], []
+        bd_x, bd_y, bd_ye = [], [], []
+        bl_x, bl_y = [], []
         for night in sorted(bins):
             rs = bins[night]
             w = np.array([1.0 / max(r["flux_err"], 1e-6) ** 2
                           for r in rs])
             f = np.array([r["flux"] for r in rs])
-            bx.append(float(np.mean([r["mjd"] for r in rs])))
-            by.append(float(np.sum(w * f) / np.sum(w)))
-            bye.append(float(np.sqrt(1.0 / np.sum(w))))
-        ax.errorbar(bx, by, yerr=bye, fmt="s", ms=6, capsize=3,
-                    elinewidth=1.0, color=color,
-                    label=f"{band}-band (nightly)")
-    ax.axhline(0, color="0.4", lw=0.8, ls="--")
+            fbar = float(np.sum(w * f) / np.sum(w))
+            ebar = float(np.sqrt(1.0 / np.sum(w)))
+            xm = float(np.mean([r["mjd"] for r in rs]))
+            if fbar > 0:
+                bd_x.append(xm)
+                bd_y.append(float(flux_to_mag(fbar)))
+                bd_ye.append(float(1.0857 * ebar / fbar))
+            else:
+                bl_x.append(xm)
+                bl_y.append(float(flux_to_mag(max(ebar, 1e-6))))
+        if bd_x:
+            ax.errorbar(bd_x, bd_y, yerr=bd_ye, fmt="s", ms=6,
+                        capsize=3, elinewidth=1.0, color=color,
+                        label=f"{band}-band (nightly)")
+        if bl_x:
+            ax.plot(bl_x, bl_y, "v", ms=6, color=color,
+                    label=f"{band}-band limits (nightly)")
     ax.set_xlabel("MJD")
-    ax.set_ylabel("Difference flux (nJy)")
+    ax.set_ylabel("Difference mag (AB)")
     ax.set_title(title)
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
+    ax.invert_yaxis()
     fig.tight_layout()
     return fig
 
@@ -661,10 +705,17 @@ def write_lightcurve_csv(path, phot):
     """Write photometry rows to CSV; returns path."""
     cols = ["mjd", "utc", "band", "flux", "flux_err"]
     with open(path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=cols)
+        w = csv.DictWriter(f, fieldnames=cols + ["mag", "mag_err"])
         w.writeheader()
         for row in phot:
-            w.writerow({k: row[k] for k in cols})
+            rec = {k: row[k] for k in cols}
+            if row["flux"] > 0:
+                rec["mag"] = float(flux_to_mag(row["flux"]))
+                rec["mag_err"] = float(
+                    flux_to_mag_err(row["flux"], row["flux_err"]))
+            else:
+                rec["mag"] = rec["mag_err"] = ""
+            w.writerow(rec)
     return path
 
 
