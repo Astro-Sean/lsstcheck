@@ -10,6 +10,8 @@ sky position, then reports:
   * the next scheduled Rubin pointing that covers the position, or
     an explicit note when the published schedule has none.
 
+All sources are public; no API keys or accounts needed.
+
 Examples:
     lsstcheck 2024lwa                  # TNS name
     lsstcheck AT2024lwa                # with prefix
@@ -48,6 +50,7 @@ TNS_ZIP_URL = (
     "https://www.wis-tns.org/sites/default/files/tns_public_objects/"
     "tns_public_objects.csv.zip"
 )
+# guest marker the TNS site itself sends for anonymous catalog reads
 TNS_UA = 'tns_marker{"tns_id":0,"type":"guest","name":"lsstcheck"}'
 TNS_LIVE_BASE = "https://www.wis-tns.org/object/"
 LASAIR_BASE = "https://lasair.lsst.ac.uk"
@@ -128,6 +131,7 @@ def ang_sep_deg(ra1, dec1, ra2, dec2):
 
 
 def band_name(em_min, em_max):
+    """Nearest LSST band for an em_min/em_max pair, in Angstrom."""
     mid_um = 0.5 * (em_min + em_max) * 1e6
     return min(BAND_UM, key=lambda b: abs(BAND_UM[b] - mid_um))
 
@@ -488,6 +492,7 @@ def live_tns_slugs(raw, tns_rows):
         cands.append(low)
     out = []
     for c in cands:
+        # keep only characters TNS object slugs allow
         c = re.sub(r"[^A-Za-z0-9_-]", "", c)
         if c and c not in out:
             out.append(c)
@@ -527,6 +532,7 @@ class LasairWeb:
 
     @staticmethod
     def _parse(html):
+        """Result rows of a search page as {id, ra, dec, sep} dicts."""
         m = re.search(r"<tbody>(.*?)</tbody>", html, re.S)
         if not m:
             return []
@@ -774,6 +780,7 @@ def write_lightcurve_csv(path, phot):
 # ---------------------------------------------------------------------------
 
 def schedule_visits(hours=SCHEDULE_HOURS):
+    """Published schedule rows for the next `hours`."""
     cols = ("s_ra,s_dec,s_fov,t_min,t_max,em_min,em_max,priority,"
             "execution_status,target_name")
     r = requests.get(
@@ -799,7 +806,8 @@ def exposure_rows(ra, dec, days=EXPOSURE_DAYS, box_deg=2.6):
     """Recent ConsDB exposures in a box around the target.
 
     Returns (rows, ok) so callers can tell "no coverage" apart from
-    "the query failed".
+    "the query failed". The query box is wider than the 1.75 deg
+    match radius so the square box does not clip the circular FOV.
     """
     now = Time.now().mjd
     ra_ranges = ra_box_ranges(ra, box_deg)
@@ -928,6 +936,7 @@ def print_lsst_section(objects, tns_rows, detections=None):
 
 
 def upcoming_visits(visits, ra, dec, now_mjd, limit=5):
+    """Schedule rows covering the position, soonest first, deduped."""
     need = ("s_ra", "s_dec", "t_min", "em_min", "em_max")
     visits = [v for v in visits
               if isinstance(v, dict) and all(k in v for k in need)]
@@ -943,6 +952,7 @@ def upcoming_visits(visits, ra, dec, now_mjd, limit=5):
     for i, v in enumerate(visits):
         if v.get("execution_status") == "Aborted":
             continue
+        # the -0.03 MJD grace keeps a pointing that just started
         if sep[i] < fov_r[i] and v["t_min"] > now_mjd - 0.03:
             hits.append((v["t_min"], float(sep[i]), v))
     hits.sort(key=lambda h: h[0])
@@ -1035,6 +1045,8 @@ def scheduled_region_stats(visits, ra, dec, now_mjd,
     for v, s in zip(visits, sep):
         if v.get("execution_status") == "Aborted":
             continue
+        # same grace as upcoming_visits: a pointing that just started
+        # still counts as planned coverage
         if v["t_min"] <= now_mjd - 0.03:
             continue
         s = float(s)
@@ -1113,6 +1125,8 @@ def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
     tp.info("Schedule viewer, pointings near this field: "
             f"{osc8_link(schedule_viewer_url(ra, dec, sched_hours))}")
 
+    # exposure history is descriptive only; it reports what was
+    # covered and never feeds a prediction of future coverage
     exp_ok = True
     try:
         rows, exp_ok = exposure_rows(ra, dec, days=days)
@@ -1266,7 +1280,8 @@ def main():
     # nearest match first; objects without a separation sort last
     lasair_objs.sort(key=lambda o: o.get("sep", 1e9))
 
-    # coords/details from the first object's page (also covers id-only input)
+    # coords/details from the first object's page (also covers id-only
+    # input); a page surprise should not sink the report
     if lasair_objs:
         try:
             obj_page_info = lasair.object_page(lasair_objs[0]["id"])
