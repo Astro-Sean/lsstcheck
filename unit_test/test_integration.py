@@ -5,6 +5,7 @@ network. Run only them with:  pytest -m integration
 Skip them with:              pytest -m "not integration"
 """
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -17,9 +18,11 @@ pytestmark = pytest.mark.integration
 
 
 def run_cli(*args, timeout=240):
+    # Agg keeps --plot's plt.show() from opening a window in tests
+    env = dict(os.environ, MPLBACKEND="Agg")
     return subprocess.run(
         [str(LSSTCHECK), *args],
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, env=env,
     )
 
 
@@ -55,12 +58,22 @@ class TestKnownTarget:
         assert r.returncode == 0, r.stderr
         assert "SN2024lwa" in r.stdout
 
-    def test_plot_flag(self, tmp_path):
-        out = tmp_path / "lc.png"
-        r = run_cli("--plot", "--plot-out", str(out), "2024lwa")
+    def test_save_flag(self, tmp_path):
+        png = tmp_path / "lc.png"
+        r = run_cli("--save", "--plot-out", str(png), "2024lwa")
         assert r.returncode == 0, r.stderr
         assert "Lightcurve plot saved" in r.stdout
-        assert out.exists() and out.stat().st_size > 0
+        assert "Lightcurve table saved" in r.stdout
+        assert png.exists() and png.stat().st_size > 0
+        csv = tmp_path / "lc.csv"
+        assert csv.exists()
+        assert csv.read_text().splitlines()[0] == \
+            "mjd,utc,band,flux,flux_err"
+
+    def test_plot_flag_runs(self):
+        # headless: plt.show() is a no-op under Agg, just check rc
+        r = run_cli("--plot", "2024lwa")
+        assert r.returncode == 0, r.stderr
 
 
 class TestScheduledTarget:

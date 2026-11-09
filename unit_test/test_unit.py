@@ -572,7 +572,7 @@ class TestLasairParse:
         assert lsc.LasairWeb._photometry("<html>none</html>") == []
 
 
-class TestPlotLightcurve:
+class TestLightcurve:
     PHOT = [
         {"mjd": 61343.0, "utc": "2026-10-30", "band": "r",
          "flux": 100.0, "flux_err": 10.0},
@@ -582,12 +582,19 @@ class TestPlotLightcurve:
          "flux": 300.0, "flux_err": 15.0},
     ]
 
-    def test_writes_png(self, lsc, tmp_path):
-        out = lsc.plot_lightcurve(
-            self.PHOT, "test", str(tmp_path / "lc.png"))
-        assert out == str(tmp_path / "lc.png")
-        data = (tmp_path / "lc.png").read_bytes()
-        assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    def test_lightcurve_fig(self, lsc, tmp_path):
+        fig = lsc.lightcurve_fig(self.PHOT, "test")
+        out = tmp_path / "lc.png"
+        fig.savefig(out, dpi=100)
+        assert out.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_write_csv(self, lsc, tmp_path):
+        out = tmp_path / "lc.csv"
+        lsc.write_lightcurve_csv(str(out), self.PHOT)
+        lines = out.read_text().strip().splitlines()
+        assert lines[0] == "mjd,utc,band,flux,flux_err"
+        assert len(lines) == 4
+        assert lines[1].startswith("61343.0,2026-10-30,r,100.0")
 
 
 # ---------------------------------------------------------------------------
