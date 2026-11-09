@@ -20,6 +20,9 @@ description: Commit and push changes in the lsstcheck repo as small focused comm
 - Apply the humanizer skill to every commit message and PR body
   before writing it. Keep the text plain: state what changed and why,
   with no AI tells, no inflated claims, and no filler.
+- No AI or tool attribution of any kind: no "Generated with" lines,
+  no Co-Authored-By trailers for bots or assistants, and no mention
+  of AI in the subject, body, or PR text.
 - ASCII only, no emoji, no em dashes.
 
 ## Push
