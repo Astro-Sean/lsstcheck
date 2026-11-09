@@ -1,0 +1,907 @@
+#!/usr/bin/python3
+"""lsstcheck - cross-match a transient against LSST, TNS, and the Rubin schedule.
+
+Resolves a TNS-style name, survey/internal name, LSST diaObjectId, or
+sky position, then reports:
+
+  * the LSST object identity (diaObjectId / LSST-*-DO name) and a
+    clickable LASAIR link,
+  * alternative names from the TNS public catalog,
+  * the next scheduled Rubin pointing that covers the position, or a
+    cadence-based estimate when nothing is scheduled.
+
+Examples:
+    lsstcheck 2024lwa                  # TNS name
+    lsstcheck AT2024lwa                # with prefix
+    lsstcheck ZTF26abfwokm             # survey/internal name
+    lsstcheck 170587106692825120       # LSST diaObjectId
+    lsstcheck 338.196 -9.447           # RA Dec in decimal degrees
+    lsstcheck "338.196,-9.447,60"      # ra,dec,radius in arcsec
+    lsstcheck 13:32:47.04 -09:26:49.0   # sexagesimal
+"""
+
+import argparse
+import csv
+import io
+import os
+import re
+import sqlite3
+import sys
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlencode
+
+import numpy as np
+import requests
+from astropy.time import Time
+from astropy.coordinates import Angle
+import astropy.units as u
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import termprint as tp
+
+TNS_ZIP_URL = (
+    "https://www.wis-tns.org/sites/default/files/tns_public_objects/"
+    "tns_public_objects.csv.zip"
+)
+TNS_UA = 'tns_marker{"tns_id":0,"type":"guest","name":"lsstcheck"}'
+LASAIR_BASE = "https://lasair.lsst.ac.uk"
+OBSLOCTAP = "https://usdf-rsp.slac.stanford.edu/obsloctap"
+SCHEDULE_VIEWER = OBSLOCTAP + "/static/viewer.html"
+
+CACHE_DIR = Path(
+    os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
+) / "lsstcheck"
+TNS_DB = CACHE_DIR / "tns_public_objects.db"
+
+# LSSTCam field of view is ~3.5 deg across, so the covering radius is 1.75.
+FOV_RADIUS_DEG = 1.75
+SCHEDULE_HOURS = 48
+EXPOSURE_DAYS = 120
+
+# Band effective wavelengths in microns, for mapping em_min/em_max.
+BAND_UM = {"u": 0.35, "g": 0.48, "r": 0.62, "i": 0.75, "z": 0.87, "y": 1.0}
+
+# TNS CSV columns we keep, with sqlite types. The dump has more columns
+# (ADS bibcodes etc.) that this tool does not need.
+TNS_SCHEMA = {
+    "objid": "INTEGER",
+    "prefix": "TEXT",
+    "name": "TEXT",
+    "ra": "REAL",
+    "dec": "REAL",
+    "redshift": "REAL",
+    "type": "TEXT",
+    "discoverydate": "TEXT",
+    "discoverymag": "REAL",
+    "discmagfilter": "TEXT",
+    "reporting_group": "TEXT",
+    "source_group": "TEXT",
+    "internal_names": "TEXT",
+}
+# db column -> CSV header name in the TNS dump
+CSV_HEADER_MAP = {
+    "objid": "objid",
+    "prefix": "name_prefix",
+    "name": "name",
+    "ra": "ra",
+    "dec": "declination",
+    "redshift": "redshift",
+    "type": "type",
+    "discoverydate": "discoverydate",
+    "discoverymag": "discoverymag",
+    "discmagfilter": "discmagfilter",
+    "reporting_group": "reporting_group",
+    "source_group": "source_group",
+    "internal_names": "internal_names",
+}
+REAL_COLS = {"objid", "ra", "dec", "redshift", "discoverymag"}
+
+
+# ---------------------------------------------------------------------------
+# small helpers
+# ---------------------------------------------------------------------------
+
+def osc8_link(url, text=None):
+    """Terminal hyperlink (OSC 8); falls back to plain text."""
+    text = text or url
+    if sys.stdout.isatty() and os.environ.get("TERM", "") != "dumb":
+        return f"\x1b]8;;{url}\x07{text}\x1b]8;;\x07"
+    return text
+
+
+def ang_sep_deg(ra1, dec1, ra2, dec2):
+    """Angular separation in degrees; scalars or numpy arrays."""
+    ra1, dec1, ra2, dec2 = [
+        np.radians(np.asarray(x, dtype=float)) for x in (ra1, dec1, ra2, dec2)
+    ]
+    cosd = (np.sin(dec1) * np.sin(dec2)
+            + np.cos(dec1) * np.cos(dec2) * np.cos(ra1 - ra2))
+    return np.degrees(np.arccos(np.clip(cosd, -1.0, 1.0)))
+
+
+def band_name(em_min, em_max):
+    mid_um = 0.5 * (em_min + em_max) * 1e6
+    return min(BAND_UM, key=lambda b: abs(BAND_UM[b] - mid_um))
+
+
+def fmt_mjd_iso(mjd):
+    return Time(mjd, format="mjd").isot[:16].replace("T", " ") + " UTC"
+
+
+def iso_date(mjd):
+    return Time(mjd, format="mjd").iso[:10]
+
+
+# ---------------------------------------------------------------------------
+# input parsing
+# ---------------------------------------------------------------------------
+
+TNS_NAME_RE = re.compile(r"^(?:at|sn|frb|ul|lbv)?\s*(\d{4}[a-z]{1,5})$",
+                         re.I)
+LSST_NAME_RE = re.compile(r"^LSST-[A-Za-z]+-DO-(\d+)$", re.I)
+DIAOBJECTID_RE = re.compile(r"^\d{15,20}$")
+
+
+def coord_value(tok, is_ra):
+    """Parse one coordinate token: decimal degrees or sexagesimal."""
+    if ":" in tok or any(c in tok.lower() for c in "hms"):
+        unit = u.hourangle if is_ra else u.deg
+        return Angle(tok, unit=unit).deg
+    return float(tok)
+
+
+def split_positionals(tokens):
+    """Return (ra_deg, dec_deg, radius_arcsec|None) or None."""
+    joined = " ".join(tokens).replace(",", " ")
+    parts = joined.split()
+    if len(parts) == 6:
+        try:
+            ra = Angle(" ".join(parts[:3]), unit=u.hourangle).deg
+            dec = Angle(" ".join(parts[3:]), unit=u.deg).deg
+            return ra, dec, None
+        except (ValueError, u.UnitsError):
+            return None
+    if len(parts) in (2, 3):
+        try:
+            ra = coord_value(parts[0], is_ra=True)
+            dec = coord_value(parts[1], is_ra=False)
+            radius = float(parts[2]) if len(parts) == 3 else None
+            return ra, dec, radius
+        except (ValueError, u.UnitsError):
+            return None
+    return None
+
+
+def parse_target(tokens):
+    """Classify user input into coords / name / diaObjectId."""
+    pos = split_positionals(tokens)
+    if pos is not None:
+        return {"kind": "coords", "ra": pos[0], "dec": pos[1],
+                "radius": pos[2]}
+
+    raw = "".join(tokens).strip()
+    if not raw:
+        return None
+
+    m = LSST_NAME_RE.match(raw)
+    if m:
+        return {"kind": "lsst_name", "raw": raw, "dia_id": m.group(1)}
+    if DIAOBJECTID_RE.match(raw):
+        return {"kind": "dia_id", "raw": raw, "dia_id": raw}
+
+    return {"kind": "name", "raw": raw}
+
+
+def tns_key(name):
+    """Reduce 'AT2024lwa'/'SN 2024lwa' to the TNS key '2024lwa'."""
+    m = TNS_NAME_RE.match(name.strip())
+    return m.group(1).lower() if m else None
+
+
+def internal_names_list(text):
+    if not text:
+        return []
+    return [s.strip() for s in text.split(",") if s.strip()]
+
+
+# ---------------------------------------------------------------------------
+# TNS public catalog (sqlite cache built from the daily CSV dump)
+# ---------------------------------------------------------------------------
+
+class TnsCatalog:
+    def __init__(self, refresh=False):
+        self.db_path = TNS_DB
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        self._ensure(refresh)
+        self.csv_date = self._csv_date()
+
+    def _csv_date(self):
+        if not self.db_path.exists():
+            return None
+        try:
+            con = sqlite3.connect(self.db_path)
+            row = con.execute(
+                "SELECT value FROM meta WHERE key='csv_date'"
+            ).fetchone()
+            con.close()
+            return row[0] if row else None
+        except sqlite3.Error:
+            return None
+
+    def _ensure(self, refresh):
+        today = datetime.now(timezone.utc).date().isoformat()
+        if not refresh and self._csv_date() == today:
+            return
+        tp.info("TNS catalog stale or missing - refreshing index")
+        with tp.timed("building TNS index"):
+            self._rebuild()
+
+    def _rebuild(self):
+        tmp_db = self.db_path.with_suffix(".db.new")
+        if tmp_db.exists():
+            tmp_db.unlink()
+        zpath = CACHE_DIR / "tns_public_objects.csv.zip"
+        try:
+            with requests.get(TNS_ZIP_URL, headers={"User-Agent": TNS_UA},
+                              timeout=180, stream=True) as r:
+                r.raise_for_status()
+                with open(zpath, "wb") as f:
+                    for chunk in r.iter_content(1 << 20):
+                        f.write(chunk)
+        except requests.RequestException as e:
+            if self.db_path.exists():
+                tp.warn(f"TNS download failed ({e}); using cached index")
+                return
+            raise RuntimeError(f"TNS download failed: {e}")
+
+        cols = list(TNS_SCHEMA)
+        con = sqlite3.connect(tmp_db)
+        con.execute(
+            "CREATE TABLE objects ("
+            + ", ".join(f"{c} {TNS_SCHEMA[c]}" for c in cols)
+            + ")"
+        )
+        con.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+
+        def to_val(col, raw):
+            if raw is None or raw == "":
+                return None
+            if col in REAL_COLS:
+                try:
+                    return float(raw)
+                except ValueError:
+                    return None
+            return raw
+
+        with zipfile.ZipFile(zpath) as zf:
+            with zf.open(zf.namelist()[0]) as raw:
+                # first line is a creation timestamp, not the header
+                first = raw.readline().decode("utf-8", "replace").strip()
+                csv_date = first[:10]
+                reader = csv.DictReader(
+                    io.TextIOWrapper(raw, encoding="utf-8")
+                )
+                batch = []
+                for rec in reader:
+                    batch.append(tuple(
+                        to_val(c, rec.get(CSV_HEADER_MAP[c])) for c in cols
+                    ))
+                    if len(batch) >= 5000:
+                        con.executemany(
+                            "INSERT INTO objects VALUES ("
+                            + ",".join("?" * len(cols)) + ")",
+                            batch,
+                        )
+                        batch.clear()
+                if batch:
+                    con.executemany(
+                        "INSERT INTO objects VALUES ("
+                        + ",".join("?" * len(cols)) + ")",
+                        batch,
+                    )
+        con.execute("INSERT INTO meta VALUES ('csv_date', ?)", (csv_date,))
+        con.execute("CREATE INDEX idx_name ON objects(lower(name))")
+        con.commit()
+        con.close()
+        os.replace(tmp_db, self.db_path)
+
+    def _rows(self, sql, args=()):
+        con = sqlite3.connect(self.db_path)
+        con.row_factory = sqlite3.Row
+        out = [dict(r) for r in con.execute(sql, args).fetchall()]
+        con.close()
+        return out
+
+    def by_name(self, key):
+        return self._rows(
+            "SELECT * FROM objects WHERE lower(name) = ?", (key,)
+        )
+
+    def by_internal_name(self, name):
+        # LIKE prefilter, then exact match on the comma-separated entries
+        rows = self._rows(
+            "SELECT * FROM objects WHERE internal_names LIKE ?",
+            (f"%{name}%",),
+        )
+        lname = name.lower()
+        return [
+            r for r in rows
+            if any(n.lower() == lname
+                   for n in internal_names_list(r["internal_names"]))
+        ]
+
+    def cone(self, ra, dec, radius_arcsec):
+        rad = radius_arcsec / 3600.0
+        # split the RA box at the 0/360 wrap so nothing is missed
+        if ra - rad < 0:
+            ra_ranges = [(0.0, ra + rad), (ra - rad + 360.0, 360.0)]
+        elif ra + rad > 360:
+            ra_ranges = [(ra - rad, 360.0), (0.0, ra + rad - 360.0)]
+        else:
+            ra_ranges = [(ra - rad, ra + rad)]
+        dec_lo, dec_hi = dec - rad, dec + rad
+        rows = []
+        for lo, hi in ra_ranges:
+            rows.extend(self._rows(
+                "SELECT * FROM objects WHERE ra BETWEEN ? AND ? "
+                "AND dec BETWEEN ? AND ?",
+                (lo, hi, dec_lo, dec_hi),
+            ))
+        out = []
+        for r in rows:
+            if r["ra"] is None or r["dec"] is None:
+                continue
+            sep = float(ang_sep_deg(ra, dec, r["ra"], r["dec"])) * 3600.0
+            if sep <= radius_arcsec:
+                r["_sep"] = sep
+                out.append(r)
+        out.sort(key=lambda r: r["_sep"])
+        return out
+
+    def by_dia_id(self, dia_id):
+        # internal_names entries look like 'LSST-AP-DO-<diaObjectId>'
+        return self._rows(
+            "SELECT * FROM objects WHERE internal_names LIKE ?",
+            (f"%{dia_id}%",),
+        )
+
+    def find_name(self, raw):
+        """TNS rows matching an object name or internal name."""
+        key = tns_key(raw)
+        rows = self.by_name(key) if key else []
+        if not rows:
+            rows = self.by_internal_name(raw)
+        return rows
+
+
+# ---------------------------------------------------------------------------
+# LASAIR web search (no token needed; uses the public search form)
+# ---------------------------------------------------------------------------
+
+class LasairWeb:
+    def __init__(self):
+        self.s = requests.Session()
+        self.s.headers["User-Agent"] = "lsstcheck/1.0"
+        self._csrf = None
+
+    def _token(self):
+        if self._csrf is None:
+            r = self.s.get(f"{LASAIR_BASE}/search/", timeout=30)
+            r.raise_for_status()
+            m = re.search(r'csrfmiddlewaretoken" value="([^"]+)', r.text)
+            if not m:
+                raise RuntimeError("no CSRF token on LASAIR search page")
+            self._csrf = m.group(1)
+        return self._csrf
+
+    def search(self, query):
+        """Run a LASAIR web search; returns [{id, ra, dec, sep}]."""
+        r = self.s.post(
+            f"{LASAIR_BASE}/search/",
+            data={"csrfmiddlewaretoken": self._token(), "query": query},
+            headers={"Referer": f"{LASAIR_BASE}/search/"},
+            timeout=60,
+        )
+        r.raise_for_status()
+        return self._parse(r.text)
+
+    @staticmethod
+    def _parse(html):
+        m = re.search(r"<tbody>(.*?)</tbody>", html, re.S)
+        if not m:
+            return []
+        out = []
+        for row in re.findall(r"<tr>(.*?)</tr>", m.group(1), re.S):
+            idm = re.search(r"/objects/(\d+)/", row)
+            if not idm:
+                continue
+            cells = [
+                re.sub(r"<[^>]+>", "", c).strip()
+                for c in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S)
+            ]
+            nums = []
+            for c in cells[1:]:
+                try:
+                    nums.append(float(c))
+                except ValueError:
+                    pass
+            rec = {"id": idm.group(1)}
+            if len(nums) >= 2:
+                rec["ra"], rec["dec"] = nums[0], nums[1]
+            if len(nums) >= 3:
+                rec["sep"] = nums[2]
+            out.append(rec)
+        return out
+
+    def object_page(self, dia_id):
+        """Fetch an object page; returns (coords, detection_count)."""
+        try:
+            r = self.s.get(f"{LASAIR_BASE}/objects/{dia_id}/", timeout=60)
+            if r.status_code != 200:
+                return None
+        except requests.RequestException:
+            return None
+        html = r.text
+        coords = None
+        m = re.search(r"lon=([0-9.]+)d&lat=(-?[0-9.]+)d", html)
+        if m:
+            coords = (float(m.group(1)), float(m.group(2)))
+        ndet = None
+        m = re.search(r"Detection Count</td>\s*<td[^>]*>\s*([0-9]+)", html)
+        if m:
+            ndet = int(m.group(1))
+        return coords, ndet
+
+
+# ---------------------------------------------------------------------------
+# Rubin schedule (ObsLocTAP) and ConsDB exposures
+# ---------------------------------------------------------------------------
+
+def schedule_visits(hours=SCHEDULE_HOURS):
+    cols = ("s_ra,s_dec,s_fov,t_min,t_max,em_min,em_max,priority,"
+            "execution_status,target_name")
+    r = requests.get(
+        f"{OBSLOCTAP}/schedule",
+        params={"time": hours, "columns": cols},
+        timeout=90,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def ra_box_ranges(ra, half_deg):
+    """RA interval(s) for a box, splitting at the 0/360 wrap."""
+    lo, hi = ra - half_deg, ra + half_deg
+    if lo < 0:
+        return [(0.0, hi), (lo + 360.0, 360.0)]
+    if hi > 360:
+        return [(lo, 360.0), (0.0, hi - 360.0)]
+    return [(lo, hi)]
+
+
+def exposure_rows(ra, dec, days=EXPOSURE_DAYS, box_deg=2.6):
+    """Recent ConsDB exposures in a box around the target.
+
+    Returns (rows, ok) so callers can tell "no coverage" apart from
+    "the query failed".
+    """
+    now = Time.now().mjd
+    ra_ranges = ra_box_ranges(ra, box_deg)
+    dec_lo, dec_hi = max(-90.0, dec - box_deg), min(90.0, dec + box_deg)
+    if dec_lo >= dec_hi:
+        return [], True
+    cols = "exposure_id,obs_start_mjd,band,s_ra,s_dec,target_name"
+    rows = []
+    for lo, hi in ra_ranges:
+        pred = (
+            f"obs_start_mjd > {now - days} AND s_ra > {lo} "
+            f"AND s_ra < {hi} AND s_dec > {dec_lo} AND s_dec < {dec_hi}"
+        )
+        try:
+            r = requests.get(
+                f"{OBSLOCTAP}/exposures",
+                params={
+                    "columns": cols, "predicate": pred, "limit": 10000,
+                },
+                timeout=90,
+            )
+            r.raise_for_status()
+            rows.extend(r.json())
+        except (requests.RequestException, ValueError) as e:
+            tp.warn(f"exposure query failed: {e}")
+            return rows, False
+    return rows, True
+
+
+# ---------------------------------------------------------------------------
+# report assembly
+# ---------------------------------------------------------------------------
+
+def tns_display_name(row):
+    prefix = row.get("prefix") or ""
+    name = row.get("name") or ""
+    return f"{prefix}{name}".strip() or str(row.get("objid", "?"))
+
+
+def print_tns_section(rows, catalog_date=None):
+    tp.header("TNS")
+    if catalog_date:
+        tp.info(f"catalog date: {catalog_date}")
+    if not rows:
+        tp.info("no TNS entry for this target")
+        return
+    for row in rows[:3]:
+        bits = [tns_display_name(row)]
+        if row.get("source_group"):
+            bits.append(row["source_group"])
+        if row.get("type"):
+            bits.append(row["type"])
+        if row.get("redshift"):
+            bits.append(f"z={row['redshift']}")
+        if row.get("discoverydate"):
+            bits.append(f"disc {row['discoverydate'][:10]}")
+        if row.get("_sep") is not None:
+            bits.append(f"sep {row['_sep']:.1f} arcsec")
+        tp.ok(" | ".join(bits))
+        names = internal_names_list(row.get("internal_names"))
+        if names:
+            tp.info("alternative names:")
+            for n in names[:10]:
+                print(f"    {n}")
+            if len(names) > 10:
+                print(f"    ... and {len(names) - 10} more")
+
+
+def lsst_names_from_tns(tns_rows):
+    names = []
+    for row in tns_rows:
+        for n in internal_names_list(row.get("internal_names")):
+            if re.match(r"LSST-[A-Za-z]+-DO-\d+", n, re.I):
+                names.append(n)
+    return sorted(set(names))
+
+
+def print_lsst_section(objects, tns_rows, detections=None):
+    tp.header("LSST / LASAIR")
+    lsst_names = lsst_names_from_tns(tns_rows)
+
+    if not objects and not lsst_names:
+        tp.info("no LSST alerts at this position")
+        return
+
+    table_rows = []
+    links = []
+    seen = set()
+    for obj in objects:
+        oid = obj["id"]
+        if oid in seen:
+            continue
+        seen.add(oid)
+        match = [n for n in lsst_names
+                 if n.upper().endswith(f"-DO-{oid}")]
+        lsst_name = ", ".join(match) if match else "-"
+        sep = f"{obj['sep']:.1f}" if "sep" in obj else "-"
+        table_rows.append((oid, lsst_name, sep))
+        links.append(f"{LASAIR_BASE}/objects/{oid}/")
+        if len(table_rows) >= 5:
+            break
+    if len(objects) > len(table_rows):
+        table_rows.append((f"... +{len(objects) - len(table_rows)} more",
+                           "", ""))
+    if table_rows:
+        tp.table(["diaObjectId", "LSST name", "Sep [arcsec]"],
+                 table_rows)
+        for url in links[:3]:
+            tp.info(f"LASAIR: {osc8_link(url)}")
+    if detections is not None:
+        tp.info(f"detections in LASAIR: {detections}")
+
+    covered = {o["id"] for o in objects}
+    for n in lsst_names:
+        oid = re.search(r"-DO-(\d+)$", n, re.I)
+        if oid and oid.group(1) not in covered:
+            tp.info(f"LSST name (TNS only): {n}")
+
+
+def upcoming_visits(visits, ra, dec, now_mjd, limit=5):
+    need = ("s_ra", "s_dec", "t_min", "em_min", "em_max")
+    visits = [v for v in visits
+              if isinstance(v, dict) and all(k in v for k in need)]
+    if not visits:
+        return []
+    s_ra = np.array([v["s_ra"] for v in visits], dtype=float)
+    s_dec = np.array([v["s_dec"] for v in visits], dtype=float)
+    sep = ang_sep_deg(ra, dec, s_ra, s_dec)
+    fov_r = np.array(
+        [v.get("s_fov", 3.5) / 2.0 for v in visits], dtype=float
+    )
+    hits = []
+    for i, v in enumerate(visits):
+        if v.get("execution_status") == "Aborted":
+            continue
+        if sep[i] < fov_r[i] and v["t_min"] > now_mjd - 0.03:
+            hits.append((v["t_min"], float(sep[i]), v))
+    hits.sort(key=lambda h: h[0])
+    # collapse repeat pointings of the same epoch (~20 min) into one row
+    kept, last_t = [], None
+    for h in hits:
+        if last_t is not None and h[0] - last_t < 20.0 / 1440.0:
+            continue
+        kept.append(h)
+        last_t = h[0]
+    return kept[:limit]
+
+
+def schedule_horizon_h(visits, now_mjd):
+    """How far ahead the published schedule actually reaches, in hours."""
+    ends = [v["t_max"] for v in visits
+            if isinstance(v, dict) and "t_max" in v]
+    return (max(ends) - now_mjd) * 24.0 if ends else None
+
+
+def schedule_viewer_url(ra, dec, hours=SCHEDULE_HOURS):
+    """Schedule viewer URL pre-filtered to pointings near the target.
+
+    The box is +/-2 deg, which contains every pointing whose center is
+    within the ~1.75 deg field radius of the target.
+    """
+    half = 2.0
+    dlo = max(-90.0, dec - half)
+    dhi = min(90.0, dec + half)
+    lo, hi = ra - half, ra + half
+    if lo < 0:
+        ra_pred = f"(s_ra>{lo + 360:.2f} OR s_ra<{hi:.2f})"
+    elif hi > 360:
+        ra_pred = f"(s_ra>{lo:.2f} OR s_ra<{hi - 360:.2f})"
+    else:
+        ra_pred = f"s_ra>{lo:.2f} AND s_ra<{hi:.2f}"
+    pred = f"s_dec>{dlo:.2f} AND s_dec<{dhi:.2f} AND {ra_pred}"
+    params = urlencode({"start": "now", "time": hours,
+                        "predicate": pred})
+    return f"{SCHEDULE_VIEWER}?{params}"
+
+
+def skymap_url(hours=SCHEDULE_HOURS):
+    return f"{OBSLOCTAP}/skymap?start=now&time={hours}"
+
+
+def covered_nights(rows, ra, dec):
+    """Map night index -> [(mjd, exposure)] for exposures covering target."""
+    rows = [e for e in rows
+            if isinstance(e, dict)
+            and all(k in e for k in
+                    ("s_ra", "s_dec", "obs_start_mjd"))]
+    if not rows:
+        return {}
+    s_ra = np.array([float(e["s_ra"]) for e in rows])
+    s_dec = np.array([float(e["s_dec"]) for e in rows])
+    sep = ang_sep_deg(ra, dec, s_ra, s_dec)
+    nights = {}
+    for e, s in zip(rows, sep):
+        if s >= FOV_RADIUS_DEG:
+            continue
+        mjd = float(e["obs_start_mjd"])
+        nights.setdefault(int(mjd + 0.25), []).append((mjd, e))
+    return nights
+
+
+def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
+    tp.header("Rubin schedule")
+    now = Time.now().mjd
+    sched_ok = True
+    try:
+        visits = schedule_visits(sched_hours)
+    except (requests.RequestException, ValueError) as e:
+        tp.warn(f"schedule query failed: {e}")
+        visits = []
+        sched_ok = False
+    if not isinstance(visits, list):
+        visits = []
+
+    horizon_h = schedule_horizon_h(visits, now)
+    hits = upcoming_visits(visits, ra, dec, now)
+    if hits:
+        tp.info("scheduled visits covering this position:")
+        rows = []
+        for tmin, sep, v in hits:
+            band = band_name(v["em_min"], v["em_max"])
+            pri = {0: "next visit", 1: "1 h queue",
+                   2: "24 h forecast"}.get(v.get("priority"), "?")
+            prog = v.get("target_name") or "-"
+            rows.append((fmt_mjd_iso(tmin), band,
+                         f"{sep * 60:.0f}", pri, prog))
+        tp.table(["Time (UTC)", "Band", "Off-axis [arcmin]",
+                  "Priority", "Program"], rows)
+    elif sched_ok:
+        if horizon_h is not None:
+            tp.info(f"no visit scheduled in the published window "
+                    f"(reaches ~{horizon_h:.0f} h ahead)")
+        else:
+            tp.info("no visit scheduled in the published window")
+
+    tp.info("schedule viewer, pointings near this field: "
+            f"{osc8_link(schedule_viewer_url(ra, dec, sched_hours))}")
+
+    exp_ok = True
+    try:
+        rows, exp_ok = exposure_rows(ra, dec, days=days)
+    except Exception as e:  # network/parse surprises
+        tp.warn(f"exposure history query failed: {e}")
+        rows = []
+        exp_ok = False
+
+    if not exp_ok:
+        tp.info("exposure history unavailable; cannot check past "
+                "coverage")
+        return
+
+    nights = covered_nights(rows, ra, dec)
+    if len(nights) >= 2:
+        keys = sorted(nights)
+        last_mjd = max(m for m, _ in nights[keys[-1]])
+        gaps = np.diff(keys).astype(float)
+        med_gap = float(np.median(gaps))
+        # roll the estimate forward so it lands in the future
+        est_mjd = last_mjd + med_gap
+        while est_mjd < now:
+            est_mjd += med_gap
+        bands = sorted({e.get("band", "?") for es in nights.values()
+                        for _, e in es})
+        tp.kv("Coverage history",
+              f"{len(keys)} nights in {days} d, last {iso_date(last_mjd)}")
+        tp.kv("Median revisit", f"{med_gap:.1f} d")
+        tp.kv("Bands", ", ".join(bands))
+        if not hits:
+            tp.ok(f"estimated next coverage ~{iso_date(est_mjd)} "
+                  f"(in ~{est_mjd - now:.0f} d)")
+    elif nights:
+        last_mjd = max(m for m, _ in nights[max(nights)])
+        tp.kv("Coverage history", "one night only")
+        tp.kv("Last covered", iso_date(last_mjd))
+        tp.info("too few repeats to estimate the next coverage")
+    else:
+        tp.info(f"no exposures cover this position in the last "
+                f"{days} d")
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="lsstcheck",
+        description="LSST/TNS cross-match and Rubin schedule lookup.",
+    )
+    ap.add_argument("target", nargs="+",
+                    help="TNS name, survey name, diaObjectId, or RA Dec")
+    ap.add_argument("--radius", type=float, default=15.0,
+                    help="LASAIR cone radius in arcsec (default 15)")
+    ap.add_argument("--tns-radius", type=float, default=5.0,
+                    help="TNS cone radius in arcsec (default 5)")
+    ap.add_argument("--days", type=int, default=EXPOSURE_DAYS,
+                    help="days of exposure history for cadence estimate")
+    ap.add_argument("--sched-hours", type=int, default=SCHEDULE_HOURS,
+                    help="schedule look-ahead hours, 1-48 (default 48)")
+    ap.add_argument("--refresh-tns", action="store_true",
+                    help="force TNS index rebuild")
+    args = ap.parse_args()
+
+    target = parse_target(args.target)
+    if target is None:
+        tp.die("could not parse target; see --help")
+
+    ra = dec = None
+    coords_source = None
+    tns_rows = []
+
+    # ---- TNS: resolve names, get alternative names and coordinates ----
+    cat = None
+    try:
+        cat = TnsCatalog(refresh=args.refresh_tns)
+    except (RuntimeError, sqlite3.Error, OSError) as e:
+        tp.warn(f"TNS catalog unavailable: {e}")
+
+    if cat is not None:
+        if target["kind"] in ("name", "lsst_name"):
+            tns_rows = cat.find_name(target["raw"])
+            if not tns_rows and target.get("dia_id"):
+                tns_rows = cat.by_dia_id(target["dia_id"])
+            if tns_rows and target["kind"] == "name":
+                try:
+                    ra = float(tns_rows[0]["ra"])
+                    dec = float(tns_rows[0]["dec"])
+                    coords_source = "TNS"
+                except (TypeError, ValueError):
+                    pass
+        elif target["kind"] == "dia_id":
+            tns_rows = cat.by_dia_id(target["dia_id"])
+        elif target["kind"] == "coords":
+            tns_rows = cat.cone(target["ra"], target["dec"],
+                                args.tns_radius)[:3]
+
+    if target["kind"] == "coords":
+        ra, dec = target["ra"], target["dec"]
+        if target.get("radius"):
+            args.radius = target["radius"]
+        coords_source = "input"
+
+    # ---- LASAIR: find LSST objects ----
+    lasair = LasairWeb()
+    lasair_objs = []
+    obj_page_info = None
+    queries = []
+    if ra is not None:
+        queries.append(f"{ra:.6f} {dec:.6f} {args.radius:g}")
+    if target["kind"] in ("name", "lsst_name"):
+        queries.append(target["raw"])
+    if target["kind"] in ("dia_id", "lsst_name"):
+        queries.append(target["dia_id"])
+
+    try:
+        for q in queries:
+            for obj in lasair.search(q):
+                if not any(o["id"] == obj["id"] for o in lasair_objs):
+                    lasair_objs.append(obj)
+    except (requests.RequestException, RuntimeError, ValueError) as e:
+        tp.warn(f"LASAIR search failed: {e}")
+
+    # nearest match first; objects without a separation sort last
+    lasair_objs.sort(key=lambda o: o.get("sep", 1e9))
+
+    # coords/details from the first object's page (also covers id-only input)
+    if lasair_objs:
+        try:
+            obj_page_info = lasair.object_page(lasair_objs[0]["id"])
+        except Exception:
+            obj_page_info = None
+        if ra is None and obj_page_info and obj_page_info[0]:
+            ra, dec = obj_page_info[0]
+            coords_source = "LASAIR"
+    if ra is None:
+        for obj in lasair_objs:
+            if obj.get("ra") is not None and obj.get("dec") is not None:
+                ra, dec = obj["ra"], obj["dec"]
+                coords_source = "LASAIR"
+                break
+
+    if ra is None:
+        tp.die("could not determine coordinates for this target")
+
+    # ---- print ----
+    tp.header("target")
+    if target["kind"] == "name":
+        tp.info(f"name: {target['raw']}")
+    elif target["kind"] in ("dia_id", "lsst_name"):
+        tp.info(f"LSST id: {target['dia_id']}")
+    tp.info(f"position: {ra:.6f}, {dec:.6f}"
+            + (f"  ({coords_source})" if coords_source else ""))
+    if dec > 15.0:
+        tp.warn(f"dec {dec:+.1f} is near or past the northern edge of "
+                "the LSST survey footprint; coverage may be rare")
+
+    detections = (obj_page_info[1]
+                  if obj_page_info else None)
+    print_tns_section(tns_rows,
+                      cat.csv_date if cat is not None else None)
+    print_lsst_section(lasair_objs, tns_rows, detections)
+
+    sched_hours = min(48, max(1, args.sched_hours))
+    print_schedule_section(ra, dec, args.days, sched_hours)
+
+    tp.header("links")
+    if lasair_objs:
+        oid = lasair_objs[0]["id"]
+        tp.info(f"LASAIR object: "
+                f"{osc8_link(f'{LASAIR_BASE}/objects/{oid}/')}")
+    tp.info(f"LASAIR cone search: "
+            f"{osc8_link(f'{LASAIR_BASE}/search/{ra:.6f},{dec:.6f},'
+                        f'{args.radius:g}')}")
+    tp.info(f"pointings skymap: {osc8_link(skymap_url(sched_hours))}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
