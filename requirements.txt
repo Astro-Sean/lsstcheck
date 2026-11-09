@@ -1,0 +1,6 @@
+# lsstcheck needs Python 3.9+ and these packages.
+# matplotlib is only used for --plot and --save.
+numpy>=1.24
+astropy>=5.3
+requests>=2.28
+matplotlib>=3.7
