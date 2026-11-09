@@ -28,20 +28,15 @@ Options:
 
 ## What it reports
 
-- **TNS** - catalog date, object name, reporting group, type,
-  redshift, discovery date, separation, and alternative names.
-- **LSST / LASAIR** - diaObjectId, `LSST-*-DO-*` names, LASAIR
-  detection count, and a clickable object link (OSC 8 hyperlink; the
-  raw URL prints too).
-- **Rubin schedule** - the tool queries the published schedule first
-  and says how far ahead it reaches. Confirmed visits print as a
-  table. Past coverage always prints as history (nights covered, last
-  covered date, bands, median revisit). When nothing is scheduled, an
-  estimate of the next coverage date is built from that history and
-  labeled as an estimate - it is not a forecast. The schedule section
-  links to the schedule viewer pre-filtered to pointings within ~2 deg
-  of the target, and the links section adds the all-sky pointings
-  skymap.
+| section | contents |
+|---|---|
+| TNS | catalog date, object name, reporting group, type, redshift, discovery date, separation, alternative names |
+| LSST / LASAIR | diaObjectId, `LSST-*-DO-*` names, detection count, clickable object link (OSC 8; raw URL prints too) |
+| Rubin schedule | published-window extent, confirmed visit table when covered, coverage history (nights, last date, bands, median revisit), labeled estimate when unscheduled |
+
+The schedule section links to the schedule viewer pre-filtered to
+pointings within ~2 deg of the target, and the links section adds the
+all-sky pointings skymap.
 
 ## Example
 
@@ -89,11 +84,28 @@ estimated next coverage ~2026-11-11 (in ~2 d)
 
 The script pins `#!/usr/bin/python3` (system Python) so it works the
 same in every conda env. That interpreter needs `requests`, `numpy`,
-and `astropy` - all present in `~/.local/lib/python3.12/site-packages`.
-The `termprint.py` helper sits beside the script and needs no install.
+and `astropy`; install them with pip if they are missing. The
+`termprint.py` helper sits beside the script and needs no install.
 
 To put it on your PATH:
 
 ```bash
-ln -s /home/sbrennan/Desktop/RISOTTO/cross_matcher/lsstcheck ~/.local/bin/lsstcheck
+ln -s /path/to/cross_matcher/lsstcheck ~/.local/bin/lsstcheck
+```
+
+## Testing
+
+`unit_test/` holds a pytest suite in two parts:
+
+- `test_unit.py` - offline tests for input parsing, coordinate math,
+  schedule matching, TNS catalog building (mocked download), and
+  LASAIR HTML parsing (fixtures). No network needed.
+- `test_integration.py` - end-to-end runs of the CLI against live
+  services: the known target `2024lwa`, an LSST object with scheduled
+  visits, unobserved coordinates, name forms, and bad input.
+
+```bash
+pytest                    # everything
+pytest -m "not integration"   # offline tests only, a few seconds
+pytest -m integration         # live-service stress tests, ~1 min
 ```
