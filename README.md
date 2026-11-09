@@ -1,8 +1,8 @@
 # lsstcheck
 
 Cross-match a transient against LSST, the TNS public catalog, and the
-Rubin schedule. Takes a TNS name, a survey name, an LSST diaObjectId,
-or sky coordinates.
+Rubin schedule. Give it a TNS name, survey name, LSST diaObjectId, or
+sky coordinates.
 
 ## Usage
 
@@ -34,13 +34,13 @@ Options:
 
 | section | contents |
 |---|---|
-| TNS | catalog date, object name, reporting group, type, redshift, discovery date, separation, alternative names with their groups. Rows verified against the live site are tagged `live` |
-| LSST / LASAIR | diaObjectId, `LSST-*-DO-*` names, detection count, clickable object link (OSC 8; raw URL prints too). `--plot` opens the difference-flux lightcurve; `--save` writes the plot and table to the current directory |
-| Rubin Schedule | published-window extent, confirmed visit table when covered, coverage history (nights, last date, bands, median revisit), labeled estimate when unscheduled |
+| TNS | catalog date, object name, type, redshift, discovery date, alternative names with their groups |
+| LSST / LASAIR | diaObjectId, `LSST-*-DO-*` names, detection count, clickable object link |
+| Rubin Schedule | published-window extent, confirmed visit table when covered, coverage history, labeled estimate when unscheduled |
 
-The schedule section links to the schedule viewer pre-filtered to
-pointings within ~2 deg of the target, and the links section adds the
-all-sky pointings skymap.
+`--plot` opens the difference-flux lightcurve and `--save` writes the
+plot and table to the current directory. The schedule section links
+to the schedule viewer filtered to pointings near the target.
 
 ## Example
 
@@ -84,42 +84,9 @@ Bands                    : i, r
 
 ## Data sources
 
-- TNS public objects CSV dump, no credentials. Cached as sqlite in
-  `~/.cache/lsstcheck/` and rebuilt when the daily file is newer. For
-  name and diaObjectId inputs the tool also checks the live object
-  page on wis-tns.org when the catalog misses, or always with
-  `--live-tns`; live hits show alternative names with their reporting
-  groups.
+- TNS public objects CSV, cached as sqlite in `~/.cache/lsstcheck/`.
+  Name and diaObjectId inputs also check the live page on
+  wis-tns.org when the catalog misses, or always with `--live-tns`.
 - LASAIR public web search at lasair.lsst.ac.uk, no API token needed.
-- Rubin ObsLocTAP at usdf-rsp.slac.stanford.edu/obsloctap:
-  `/schedule` for the published window, `/exposures` for history.
-
-## Requirements
-
-The script pins `#!/usr/bin/python3` (system Python) so it works the
-same in every conda env. That interpreter needs `requests`, `numpy`,
-and `astropy`; install them with pip if they are missing. The
-`termprint.py` helper sits beside the script and needs no install.
-
-To put it on your PATH:
-
-```bash
-ln -s /path/to/cross_matcher/lsstcheck ~/.local/bin/lsstcheck
-```
-
-## Testing
-
-`unit_test/` holds a pytest suite in two parts:
-
-- `test_unit.py` - offline tests for input parsing, coordinate math,
-  schedule matching, TNS catalog building (mocked download), and
-  LASAIR HTML parsing (fixtures). No network needed.
-- `test_integration.py` - end-to-end runs of the CLI against live
-  services: the known target `2024lwa`, an LSST object with scheduled
-  visits, unobserved coordinates, name forms, and bad input.
-
-```bash
-pytest                    # everything
-pytest -m "not integration"   # offline tests only, a few seconds
-pytest -m integration         # live-service stress tests, ~1 min
-```
+- Rubin ObsLocTAP at usdf-rsp.slac.stanford.edu/obsloctap for the
+  published schedule and exposure history.
