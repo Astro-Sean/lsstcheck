@@ -606,6 +606,12 @@ BAND_COLORS = {
     "i": "#ff7f0e", "z": "#1f77b4", "y": "#17becf",
 }
 
+# marker shape encodes the band so bands stay distinct in greyscale
+BAND_MARKERS = {
+    "u": "o", "g": "s", "r": "^", "i": "D", "z": "p", "y": "h",
+}
+MARKER_SPARES = ["X", "*", "P", "x", "+", "1", "2", "3", "4"]
+
 # AB magnitude zeropoint for flux in nanoJanskys
 FLUX_ZP_NJY = 31.4
 
@@ -630,9 +636,10 @@ def flux_to_mag_err(flux, flux_err):
 def lightcurve_fig(phot, title):
     """Build the AB-mag lightcurve figure; returns the Figure.
 
-    Detections plot as faded points; non-detections as faded upper
-    limits. Squares mark inverse-variance weighted nightly bins per
-    band, with downward triangles for bins consistent with zero flux.
+    Marker shape encodes the band. Raw points plot faded with white
+    faces underneath; filled markers of the same shape mark
+    inverse-variance weighted nightly bins. Upper limits use open
+    downward triangles in the band color.
     """
     import matplotlib.pyplot as plt
 
@@ -643,7 +650,12 @@ def lightcurve_fig(phot, title):
     fig, ax = plt.subplots(figsize=(8, 4.5))
     order = [b for b in "ugrizy" if b in by_band]
     order += [b for b in by_band if b not in order]
+    markers = {}
+    spares = iter(MARKER_SPARES)
     for band in order:
+        markers[band] = BAND_MARKERS.get(band) or next(spares, "o")
+    for band in order:
+        marker = markers[band]
         rows = sorted(by_band[band], key=lambda r: r["mjd"])
         color = BAND_COLORS.get(band)
         det = [r for r in rows if r["flux"] > 0]
@@ -654,8 +666,10 @@ def lightcurve_fig(phot, title):
                 flux_to_mag([r["flux"] for r in det]),
                 yerr=flux_to_mag_err([r["flux"] for r in det],
                                      [r["flux_err"] for r in det]),
-                fmt="o", ms=3.5, capsize=2, elinewidth=0.6,
+                fmt=marker, ms=4, capsize=2, elinewidth=0.6,
                 color=color, alpha=0.25,
+                markerfacecolor="white", markeredgecolor=color,
+                markeredgewidth=0.8,
             )
         if lim:
             ax.plot(
@@ -663,6 +677,8 @@ def lightcurve_fig(phot, title):
                 flux_to_mag([max(r["flux_err"], 1e-6)
                              for r in lim]),
                 "v", ms=4, color=color, alpha=0.25,
+                markerfacecolor="white", markeredgecolor=color,
+                markeredgewidth=0.8,
             )
         bins = {}
         for r in rows:
@@ -685,11 +701,12 @@ def lightcurve_fig(phot, title):
                 bl_x.append(xm)
                 bl_y.append(float(flux_to_mag(max(ebar, 1e-6))))
         if bd_x:
-            ax.errorbar(bd_x, bd_y, yerr=bd_ye, fmt="s", ms=6,
+            ax.errorbar(bd_x, bd_y, yerr=bd_ye, fmt=marker, ms=7,
                         capsize=3, elinewidth=1.0, color=color,
                         label=f"{band}-band (nightly)")
         if bl_x:
-            ax.plot(bl_x, bl_y, "v", ms=6, color=color,
+            ax.plot(bl_x, bl_y, "v", ms=7, color=color,
+                    markerfacecolor="white", markeredgewidth=1.0,
                     label=f"{band}-band limits (nightly)")
     ax.set_xlabel("MJD")
     ax.set_ylabel("Difference mag (AB)")
