@@ -140,6 +140,16 @@ def iso_date(mjd):
     return Time(mjd, format="mjd").iso[:10]
 
 
+def night_index(mjd):
+    """Observing-night bin for an MJD.
+
+    The +0.25 offset puts the day edge at MJD frac 0.75, mid-afternoon
+    in Chile, so one night's visits stay together instead of splitting
+    at UTC midnight.
+    """
+    return int(mjd + 0.25)
+
+
 # ---------------------------------------------------------------------------
 # input parsing
 # ---------------------------------------------------------------------------
@@ -690,11 +700,10 @@ def lightcurve_fig(phot, title):
                 markerfacecolor="white", markeredgecolor=color,
                 markeredgewidth=0.8,
             )
-        # int(mjd + 0.25) bins by night with the edge at MJD frac 0.75,
-        # mid-afternoon in Chile, so one night's visits stay together
+        # night_index bins by observing night, not UTC date
         bins = {}
         for r in rows:
-            bins.setdefault(int(r["mjd"] + 0.25), []).append(r)
+            bins.setdefault(night_index(r["mjd"]), []).append(r)
         bd_x, bd_y, bd_ye = [], [], []
         bl_x, bl_y = [], []
         for night in sorted(bins):
@@ -996,7 +1005,7 @@ def covered_nights(rows, ra, dec):
         if s >= FOV_RADIUS_DEG:
             continue
         mjd = float(e["obs_start_mjd"])
-        nights.setdefault(int(mjd + 0.25), []).append((mjd, e))
+        nights.setdefault(night_index(mjd), []).append((mjd, e))
     return nights
 
 
@@ -1034,7 +1043,7 @@ def scheduled_region_stats(visits, ra, dec, now_mjd,
         if s >= radius_deg:
             continue
         out["pointings"] += 1
-        nights.add(int(v["t_min"] + 0.25))
+        nights.add(night_index(v["t_min"]))
         bands.add(band_name(v["em_min"], v["em_max"]))
     out["nights"] = len(nights)
     out["bands"] = sorted(bands)
