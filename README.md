@@ -4,29 +4,6 @@ Cross-match a transient against LSST, the TNS public catalog, and the
 Rubin schedule. Give it a TNS name, survey name, LSST diaObjectId, or
 sky coordinates.
 
-## Install
-
-Keep `termprint.py` in the same directory as `lsstcheck`. Then:
-
-```bash
-/usr/bin/python3 -m pip install --user -r requirements.txt
-ln -sf "$PWD/lsstcheck" ~/.local/bin/lsstcheck
-```
-
-If pip refuses with `externally-managed-environment` (common on
-Debian/Ubuntu), add `--break-system-packages`. With `--user` it only
-writes to `~/.local`, not the system directories.
-
-The shebang is pinned to `/usr/bin/python3`, so the command behaves
-the same inside conda environments. The `--user` install lands in
-`~/.local`, where that interpreter always looks. To run under a
-different interpreter, change the first line of `lsstcheck` to
-`#!/usr/bin/env python3` and install the requirements into that
-environment instead.
-
-Needs Python 3.9+. matplotlib is only used for `--plot` and
-`--save`; leave it out of `requirements.txt` if you never plot.
-
 ## Usage
 
 ```bash
