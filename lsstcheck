@@ -38,9 +38,9 @@ from urllib.parse import urlencode
 
 import numpy as np
 import requests
-from astropy.time import Time
-from astropy.coordinates import Angle
-import astropy.units as u
+
+# astropy imports sit inside the functions that need them; the
+# package costs ~1 s to load, so --help and bad-input paths skip it
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import termprint as tp
@@ -143,10 +143,12 @@ def band_name(em_min, em_max):
 
 
 def fmt_mjd_iso(mjd):
+    from astropy.time import Time
     return Time(mjd, format="mjd").isot[:16].replace("T", " ") + " UTC"
 
 
 def iso_date(mjd):
+    from astropy.time import Time
     return Time(mjd, format="mjd").iso[:10]
 
 
@@ -173,6 +175,8 @@ DIAOBJECTID_RE = re.compile(r"^\d{15,20}$")
 def coord_value(tok, is_ra):
     """Parse one coordinate token: decimal degrees or sexagesimal."""
     if ":" in tok or any(c in tok.lower() for c in "hms"):
+        from astropy.coordinates import Angle
+        import astropy.units as u
         unit = u.hourangle if is_ra else u.deg
         return Angle(tok, unit=unit).deg
     return float(tok)
@@ -183,6 +187,8 @@ def split_positionals(tokens):
     joined = " ".join(tokens).replace(",", " ")
     parts = joined.split()
     if len(parts) == 6:
+        from astropy.coordinates import Angle
+        import astropy.units as u
         try:
             ra = Angle(" ".join(parts[:3]), unit=u.hourangle).deg
             dec = Angle(" ".join(parts[3:]), unit=u.deg).deg
@@ -190,6 +196,8 @@ def split_positionals(tokens):
         except (ValueError, u.UnitsError):
             return None
     if len(parts) in (2, 3):
+        # UnitsError can bubble up from coord_value's Angle parsing
+        import astropy.units as u
         try:
             ra = coord_value(parts[0], is_ra=True)
             dec = coord_value(parts[1], is_ra=False)
@@ -494,7 +502,10 @@ def live_tns_slugs(raw, tns_rows):
     if tns_rows and tns_rows[0].get("name"):
         cands.append(tns_rows[0]["name"])
     low = re.sub(r"[^a-z0-9]+", "", raw.lower())
-    if low:
+    # a bare diaObjectId or LSST-*-DO-* name can never resolve to a
+    # TNS slug; trying one would just be a guaranteed 404
+    if (low and not DIAOBJECTID_RE.match(low)
+            and not LSST_NAME_RE.match(raw)):
         cands.append(low)
     out = []
     for c in cands:
@@ -815,6 +826,7 @@ def exposure_rows(ra, dec, days=EXPOSURE_DAYS, box_deg=2.6):
     "the query failed". The query box is wider than the 1.75 deg
     match radius so the square box does not clip the circular FOV.
     """
+    from astropy.time import Time
     now = Time.now().mjd
     ra_ranges = ra_box_ranges(ra, box_deg)
     dec_lo, dec_hi = max(-90.0, dec - box_deg), min(90.0, dec + box_deg)
@@ -1076,6 +1088,7 @@ def scheduled_region_stats(visits, ra, dec, now_mjd,
 def print_schedule_section(ra, dec, days, sched_hours=SCHEDULE_HOURS):
     print()
     tp.header("Rubin Schedule")
+    from astropy.time import Time
     now = Time.now().mjd
     sched_ok = True
     try:
@@ -1214,18 +1227,18 @@ def main():
         tp.warn(f"TNS catalog unavailable: {e}")
 
     if cat is not None:
-        if target["kind"] in ("name", "lsst_name"):
+        if target["kind"] == "name":
             tns_rows = cat.find_name(target["raw"])
-            if not tns_rows and target.get("dia_id"):
-                tns_rows = cat.by_dia_id(target["dia_id"])
-            if tns_rows and target["kind"] == "name":
+            if tns_rows:
                 try:
                     ra = float(tns_rows[0]["ra"])
                     dec = float(tns_rows[0]["dec"])
                     coords_source = "TNS"
                 except (TypeError, ValueError):
                     pass
-        elif target["kind"] == "dia_id":
+        elif target["kind"] in ("dia_id", "lsst_name"):
+            # the id alone matches; find_name would run a wasted
+            # internal-name LIKE scan first
             tns_rows = cat.by_dia_id(target["dia_id"])
         elif target["kind"] == "coords":
             tns_rows = cat.cone(target["ra"], target["dec"],
@@ -1272,8 +1285,10 @@ def main():
     queries = []
     if ra is not None:
         queries.append(f"{ra:.6f} {dec:.6f} {args.radius:g}")
-    if target["kind"] in ("name", "lsst_name"):
+    if target["kind"] == "name":
         queries.append(target["raw"])
+    # LASAIR understands a bare diaObjectId, not the LSST-*-DO-*
+    # alias, so lsst_name inputs only need the id query
     if target["kind"] in ("dia_id", "lsst_name"):
         queries.append(target["dia_id"])
 
