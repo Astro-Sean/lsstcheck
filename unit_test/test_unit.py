@@ -3,10 +3,15 @@
 import io
 import json
 import zipfile
+from datetime import datetime, timezone
 from unittest import mock
 
 import numpy as np
 import pytest
+
+
+def _today():
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +356,9 @@ def _tns_zip_bytes():
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         rows = [
-            "2026-11-09 00:00:00",
+            # today keeps the fixture fresh so a second open does not
+            # count as stale
+            f"{_today()} 00:00:00",
             CSV_HEADER,
             '1,SN,2024lwa,338.196,-9.447,0.056,SN II,2024-06-16,17.5,r,'
             'PS,internal,"PS24emd,LSST-AP-DO-170587106692825120"',
@@ -389,7 +396,7 @@ class TestTnsCatalog:
         return lsc.TnsCatalog(refresh=True)
 
     def test_csv_date(self, catalog):
-        assert catalog.csv_date == "2026-11-09"
+        assert catalog.csv_date == _today()
 
     def test_by_name(self, catalog):
         rows = catalog.by_name("2024lwa")
@@ -425,7 +432,7 @@ class TestTnsCatalog:
         monkeypatch.setattr(lsc.requests, "get",
                             mock.Mock(side_effect=AssertionError("net")))
         cat2 = lsc.TnsCatalog(refresh=False)
-        assert cat2.csv_date == "2026-11-09"
+        assert cat2.csv_date == _today()
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +553,18 @@ class TestLiveSlugs:
     def test_dedupes(self, lsc):
         rows = [{"name": "2024lwa"}]
         assert lsc.live_tns_slugs("2024lwa", rows) == ["2024lwa"]
+
+    def test_diaobjectid_never_a_slug(self, lsc):
+        assert lsc.live_tns_slugs("170587106692825120", []) == []
+
+    def test_lsst_name_never_a_slug(self, lsc):
+        assert lsc.live_tns_slugs(
+            "LSST-AP-DO-170587106692825120", []) == []
+
+    def test_diaobjectid_keeps_row_name(self, lsc):
+        rows = [{"name": "2024lwa"}]
+        assert lsc.live_tns_slugs("170587106692825120", rows) == [
+            "2024lwa"]
 
 
 # ---------------------------------------------------------------------------
