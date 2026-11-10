@@ -1186,8 +1186,8 @@ def main():
     )
     ap.add_argument("target", nargs="+",
                     help="TNS name, survey name, diaObjectId, or RA Dec")
-    ap.add_argument("--radius", type=float, default=15.0,
-                    help="LASAIR cone radius in arcsec (default 15)")
+    ap.add_argument("--radius", type=float, default=5.0,
+                    help="LASAIR cone radius in arcsec (default 5)")
     ap.add_argument("--tns-radius", type=float, default=5.0,
                     help="TNS cone radius in arcsec (default 5)")
     ap.add_argument("--days", type=int, default=EXPOSURE_DAYS,
